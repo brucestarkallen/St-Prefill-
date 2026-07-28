@@ -73,6 +73,7 @@ const REQUIRED_IDS = [
     'pfc_source', 'pfc_text', 'pfc_thinkingEnabled', 'pfc_openTag', 'pfc_closeTag',
     'pfc_applyToContinue', 'pfc_applyToImpersonate', 'pfc_applyToQuiet',
     'pfc_skipOnTools', 'pfc_skipOnJsonSchema', 'pfc_mergeGuard', 'pfc_logToConsole',
+    'pfc_log', 'pfc_logCopy', 'pfc_logClear',
 ];
 for (const id of REQUIRED_IDS) {
     check(`control present: ${id}`, document.getElementById(id) !== null);
@@ -90,6 +91,8 @@ check('every label targets an existing control',
 const stored = context.extensionSettings.prefillControl;
 check('settings namespace created', stored && typeof stored === 'object');
 eq('ships disabled by default', stored.enabled, false);
+eq('works without preset editing out of the box', stored.source, 'extension');
+check('log panel starts empty', document.getElementById('pfc_log').textContent.includes('No requests seen yet'));
 eq('utility generations excluded by default', stored.applyToQuiet, false);
 eq('impersonation excluded by default', stored.applyToImpersonate, false);
 eq('merge guard on by default', stored.mergeGuard, true);
@@ -141,6 +144,27 @@ eq('wire shape is exactly what the provider expects',
     Object.keys(tail).sort(), ['content', 'partial', 'reasoning_content', 'role']);
 check('status line updated', document.getElementById('pfc_status').textContent.includes('Applied'));
 
+// The decision log is the only log the user can reach on a phone.
+{
+    const panel = document.getElementById('pfc_log').textContent;
+    check('log records the reason', panel.includes('applied'));
+    check('log records the generation type', panel.includes('normal'));
+    check('log shows the wire flag', panel.includes('"partial": true'));
+    check('log shows the reasoning field', panel.includes('"reasoning_content"'));
+}
+
+{
+    const long = {
+        type: 'normal',
+        messages: [{ role: 'assistant', content: `<think>${'x'.repeat(900)}` }],
+        custom_prompt_post_processing: '',
+    };
+    hook(long);
+    const panel = document.getElementById('pfc_log').textContent;
+    check('log truncates long fields', panel.includes('(+500 chars)'));
+    check('log does not hold the whole field', !panel.includes('x'.repeat(500)));
+}
+
 const quiet = {
     type: 'quiet',
     messages: [
@@ -167,6 +191,29 @@ let escaped = false;
 try { hook(hostile); } catch { escaped = true; }
 check('engine exception never escapes into SillyTavern', escaped === false);
 eq('frozen tail left untouched', hostile.messages.at(-1).partial, undefined);
+
+{
+    check('log holds several entries', document.getElementById('pfc_log').textContent.split('────────────').length > 1);
+    document.getElementById('pfc_logClear').dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    check('clear empties the log', document.getElementById('pfc_log').textContent.includes('No requests seen yet'));
+}
+
+{
+    let copyThrew = false;
+    try {
+        document.getElementById('pfc_logCopy').dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    } catch {
+        copyThrew = true;
+    }
+    check('copy never throws without a clipboard', copyThrew === false);
+}
+
+{
+    const overflow = { type: 'normal', messages: [{ role: 'user', content: 'x' }], custom_prompt_post_processing: '' };
+    for (let i = 0; i < 15; i++) hook(overflow);
+    const entries = document.getElementById('pfc_log').textContent.split('────────────').length;
+    eq('log is capped at ten entries', entries, 10);
+}
 
 document.getElementById('pfc_enabled').checked = false;
 fire('pfc_enabled', 'change');

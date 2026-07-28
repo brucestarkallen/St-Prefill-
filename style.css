@@ -50,3 +50,32 @@
     font-family: var(--monoFontFamily, monospace);
     font-size: 0.85em;
 }
+
+.pfc_logbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 8px 0 4px;
+}
+
+.pfc_logbar .menu_button {
+    display: inline-block;
+    margin-left: 4px;
+}
+
+.pfc_log {
+    max-height: 260px;
+    overflow: auto;
+    margin: 0;
+    padding: 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.25);
+    font-family: var(--monoFontFamily, monospace);
+    font-size: 0.75em;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+}

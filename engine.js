@@ -18,7 +18,7 @@
  * Therefore any field written onto a message object here reaches the provider.
  */
 
-export const ENGINE_VERSION = '1.0.0';
+export const ENGINE_VERSION = '1.1.0';
 
 /** Generation types SillyTavern can hand to sendOpenAIRequest. */
 export const GEN_TYPE = {
@@ -45,7 +45,7 @@ export const DEFAULT_CONFIG = Object.freeze({
      *               already there. Lets you express an empty-content pure
      *               thinking prefill, which getChat() would otherwise drop.
      */
-    source: 'preset',
+    source: 'extension',
     text: '<think>I should continue the story.',
 
     /** Continuation flag written on the final assistant message. '' writes none. */

@@ -47,8 +47,8 @@ Settings appear under **Extensions → Prefill Control**. It ships **disabled**.
 
 1. Pick a **field mapping** matching your provider. This writes the two field names below it — nothing is inferred from the model name at request time.
 2. Choose where the prefill comes from:
-   - **Preset** — your preset already ends with an assistant message. Put the seed there.
-   - **Extension** — the text box below is appended as a final assistant message when the prompt has no assistant tail. Use this for pure thinking prefills, which a preset cannot express.
+   - **Extension** (default) — the text box below is appended as a final assistant message whenever the prompt has no assistant tail. Nothing to edit in the preset, and it is the only way to express a pure thinking prefill.
+   - **Preset** — your preset already ends with an assistant message and you want that used verbatim. If it does not, the status line reports *"prompt does not end in an assistant message"* and nothing is sent.
 3. Write the seed with the thinking tag first:
 
    ```
@@ -60,6 +60,14 @@ Settings appear under **Extensions → Prefill Control**. It ships **disabled**.
 
 The status line under the toggle reports what happened on the last request — applied, or which guard skipped it and why.
 
+## The decision log
+
+The panel at the bottom of the settings holds the last ten requests, newest first, each showing the reason code and **the final message exactly as it goes on the wire**. That is the log. There is no browser console step, which matters on Android and iOS where devtools are not reachable.
+
+**Copy** puts the whole log on the clipboard; if the clipboard is unavailable it selects the text instead. **Clear** empties it. Long fields are truncated so the panel never holds a second copy of the prompt.
+
+Console output is a separate opt-in checkbox for anyone running SillyTavern on a desktop.
+
 ---
 
 ## Settings
@@ -70,7 +78,7 @@ The status line under the toggle reports what happened on the last request — a
 | Field mapping | — | Writes the two fields below; not a runtime behaviour |
 | Continuation flag | `partial` | Empty writes no flag |
 | Reasoning field | `reasoning_content` | Empty disables the split |
-| Prefill comes from | preset | `preset` or `extension` |
+| Prefill comes from | extension | `extension` appends the text box; `preset` uses the preset's own assistant tail |
 | Split leading thinking tag | on | Moves the tagged span into the reasoning field |
 | Open / close tag | `<think>` / `</think>` | Close tag optional; both are regex-escaped |
 | Apply to Continue | on | Marks the existing partial reply as a continuation |
@@ -79,7 +87,7 @@ The status line under the toggle reports what happened on the last request — a
 | Skip when tools are in play | on | Providers reject continuation flags alongside tools |
 | Skip on JSON schema | on | Same |
 | Merge guard | on | See below |
-| Log every decision | off | Console trace of each request |
+| Also write to browser console | off | Desktop only; the in-app log is always on |
 
 ### Utility generations
 
@@ -138,6 +146,12 @@ npx eslint engine.js index.js
 
 ## Changelog
 
+### 1.1.0
+
+- **Decision log in the settings panel.** The last ten requests with the final wire message, a copy button, and a clear button. Console-only logging was unusable on mobile, where SillyTavern is most often run.
+- **Default prefill source is now the extension**, so enabling it works without editing a preset. Previously the default reported *"prompt does not end in an assistant message"* on a normal chat, which is the usual shape of a prompt.
+- 91 engine checks, 66 load checks, 32 proven mutations, 2 control runs.
+
 ### 1.0.0
 
 - Initial release.
@@ -147,7 +161,7 @@ npx eslint engine.js index.js
 - Generation-type filter excluding utility and impersonation requests by default.
 - Guards for tools, JSON schema, and single-message post-processing.
 - Merge guard for server-side prompt post-processing.
-- 89 engine checks, 51 load checks, 25 proven mutations, 2 control runs.
+- 89 engine checks, 51 load checks, 25 proven mutations.
 
 ---
 

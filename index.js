@@ -12,7 +12,7 @@
 import { applyPrefill, DEFAULT_CONFIG, PROFILES, REASON } from './engine.js';
 
 const MODULE = 'prefillControl';
-const EXTENSION_VERSION = '1.0.0';
+const EXTENSION_VERSION = '1.1.0';
 const UI = 'pfc';
 
 /** @returns {object} SillyTavern context */
@@ -38,6 +38,63 @@ function persist() {
     ctx().saveSettingsDebounced();
 }
 
+// ---------------------------------------------------------------- decision log
+
+const LOG_LIMIT = 10;
+const LOG_FIELD_CHARS = 400;
+
+/** @type {Array<{at: string, type: string, reason: string, tail: object|null}>} */
+const decisionLog = [];
+
+/**
+ * Copies a message with long strings truncated, so the log stays readable on a
+ * phone and never holds a second copy of the whole prompt.
+ * @param {object} message Wire message
+ * @returns {object} Truncated copy
+ */
+function summariseMessage(message) {
+    const out = {};
+    for (const [key, value] of Object.entries(message)) {
+        out[key] = typeof value === 'string' && value.length > LOG_FIELD_CHARS
+            ? `${value.slice(0, LOG_FIELD_CHARS)}… (+${value.length - LOG_FIELD_CHARS} chars)`
+            : value;
+    }
+    return out;
+}
+
+/**
+ * Records one decision, newest first.
+ * @param {object} report Engine report
+ * @param {object} generateData The request as it will be sent
+ */
+function record(report, generateData) {
+    const messages = generateData?.messages;
+    const tail = Array.isArray(messages) && messages.length ? messages[messages.length - 1] : null;
+    decisionLog.unshift({
+        at: new Date().toLocaleTimeString(),
+        type: String(generateData?.type ?? 'normal'),
+        reason: report.reason,
+        tail: tail && typeof tail === 'object' ? summariseMessage(tail) : null,
+    });
+    if (decisionLog.length > LOG_LIMIT) {
+        decisionLog.length = LOG_LIMIT;
+    }
+}
+
+/**
+ * Formats the log for display and for the clipboard.
+ * @returns {string} Rendered log
+ */
+function formatLog() {
+    if (!decisionLog.length) {
+        return 'No requests seen yet. Send a message.';
+    }
+    return decisionLog.map(entry => {
+        const body = entry.tail ? JSON.stringify(entry.tail, null, 2) : '(request had no messages)';
+        return `[${entry.at}]  ${entry.type}  →  ${entry.reason}\nfinal message on the wire:\n${body}`;
+    }).join('\n\n────────────\n\n');
+}
+
 // ---------------------------------------------------------------- the hook
 
 let lastReport = null;
@@ -55,10 +112,13 @@ function onSettingsReady(generateData) {
     }
 
     lastReport = report;
+    record(report, generateData);
     renderStatus();
+    renderLog();
 
     if (settings().logToConsole) {
-        const tail = generateData?.messages?.at(-1);
+        const messages = generateData?.messages;
+        const tail = Array.isArray(messages) && messages.length ? messages[messages.length - 1] : null;
         console.info('[Prefill Control]', report.reason, report.detail, tail);
     }
 }
@@ -92,6 +152,13 @@ function renderStatus() {
     if (lastReport.detail?.appended) bits.push('prefill appended by extension');
     el.textContent = bits.length ? `${text} — ${bits.join(', ')}` : text;
     el.classList.toggle(`${UI}_ok`, lastReport.applied);
+}
+
+function renderLog() {
+    const el = document.getElementById(`${UI}_log`);
+    if (el) {
+        el.textContent = formatLog();
+    }
 }
 
 function template() {
@@ -180,8 +247,19 @@ function template() {
       <label class="checkbox_label" for="${UI}_mergeGuard">
         <input id="${UI}_mergeGuard" type="checkbox"><span>Merge guard for server-side prompt post-processing</span>
       </label>
+
+      <hr>
+      <div class="${UI}_logbar">
+        <b>Decision log</b>
+        <div>
+          <div id="${UI}_logCopy" class="menu_button" title="Copy the log">Copy</div>
+          <div id="${UI}_logClear" class="menu_button" title="Clear the log">Clear</div>
+        </div>
+      </div>
+      <pre id="${UI}_log" class="${UI}_log">No requests seen yet. Send a message.</pre>
+      <small class="${UI}_hint">The last ${LOG_LIMIT} requests, newest first, showing the final message exactly as it goes on the wire. This is the log — you do not need a browser console.</small>
       <label class="checkbox_label" for="${UI}_logToConsole">
-        <input id="${UI}_logToConsole" type="checkbox"><span>Log every decision to the console</span>
+        <input id="${UI}_logToConsole" type="checkbox"><span>Also write each decision to the browser console</span>
       </label>
 
       <small class="${UI}_hint">Prefill Control v${EXTENSION_VERSION}</small>
@@ -207,6 +285,7 @@ function syncFromSettings() {
         if (el) el.value = s[key] ?? '';
     }
     renderStatus();
+    renderLog();
 }
 
 function bind() {
@@ -226,6 +305,27 @@ function bind() {
             persist();
         });
     }
+
+    document.getElementById(`${UI}_logClear`)?.addEventListener('click', () => {
+        decisionLog.length = 0;
+        renderLog();
+    });
+
+    document.getElementById(`${UI}_logCopy`)?.addEventListener('click', async () => {
+        const text = formatLog();
+        try {
+            await globalThis.navigator.clipboard.writeText(text);
+        } catch {
+            const el = document.getElementById(`${UI}_log`);
+            const selection = globalThis.getSelection?.();
+            if (el && selection) {
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+        }
+    });
 
     document.getElementById(`${UI}_profile`)?.addEventListener('change', (e) => {
         const profile = PROFILES[e.target.value];

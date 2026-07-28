@@ -5,9 +5,9 @@ Working notes for anyone — human or model — changing this repository.
 ## Run the gate before every push
 
 ```bash
-node test.mjs           # engine logic          → 89 checks
-node load_test.mjs      # module + DOM + wiring → 51 checks
-node negative_test.mjs  # 25 mutations, 2 control runs
+node test.mjs           # engine logic          → 91 checks
+node load_test.mjs      # module + DOM + wiring → 66 checks
+node negative_test.mjs  # 32 mutations, 2 control runs
 npx eslint engine.js index.js
 ```
 
@@ -63,6 +63,10 @@ catch, because the engine handles malformed input by design.
 **Every new guard gets a mutation.** Add the entry to `MUTATIONS` in
 `negative_test.mjs` and confirm the run count rises. A guard with no mutation is
 an unproven guard.
+
+**The log lives in the settings panel, not the console.** SillyTavern is
+routinely run on a phone, where devtools are unreachable. Any diagnostic added
+here must be visible in the UI. A console-only affordance is not a diagnostic.
 
 **Reason codes are API.** `REASON` strings are asserted in the gate and shown in
 the UI status line. Renaming one is a breaking change to both.

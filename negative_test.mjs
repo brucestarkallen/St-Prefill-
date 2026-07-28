@@ -49,7 +49,9 @@ const MUTATIONS = [
     ['empty prefill text is accepted', 'engine.js',
         'if (!text.trim()) {', 'if (false) {'],
     ['version stamp drifts', 'manifest.json',
-        '"version": "1.0.0"', '"version": "9.9.9"'],
+        '"version": "1.1.0"', '"version": "9.9.9"'],
+    ['the default stops working without preset editing', 'engine.js',
+        "source: 'extension',", "source: 'preset',"],
 
     // index.js — proven by the load gate.
     ['the hook is never registered', 'index.js',
@@ -73,6 +75,22 @@ const MUTATIONS = [
         '            s[key] = e.target.checked;', 'load_test.mjs'],
     ['the profile dropdown stops writing fields', 'index.js',
         's.flagField = profile.flagField;', 'void profile.flagField;', 'load_test.mjs'],
+    ['the decision log is never recorded', 'index.js',
+        'record(report, generateData);', 'void record;', 'load_test.mjs'],
+    ['the decision log never repaints after a request', 'index.js',
+        'record(report, generateData);\n    renderStatus();\n    renderLog();',
+        'record(report, generateData);\n    renderStatus();', 'load_test.mjs'],
+    ['the log stops truncating long fields', 'index.js',
+        '? `${value.slice(0, LOG_FIELD_CHARS)}… (+${value.length - LOG_FIELD_CHARS} chars)`',
+        '? value', 'load_test.mjs'],
+    ['the log grows without bound', 'index.js',
+        'if (decisionLog.length > LOG_LIMIT) {', 'if (false) {', 'load_test.mjs'],
+    ['clearing the log stops working', 'index.js',
+        'decisionLog.length = 0;', 'void decisionLog;', 'load_test.mjs'],
+    ['copy throws when no clipboard exists', 'index.js',
+        '            await globalThis.navigator.clipboard.writeText(text);\n        } catch {',
+        '            await globalThis.navigator.clipboard.writeText(text);\n        } finally {\n            void 0;\n        }\n        if (false) {',
+        'load_test.mjs'],
 ];
 
 const source = process.cwd();

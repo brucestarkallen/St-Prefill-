@@ -100,7 +100,10 @@ eq('json schema excluded', applyPrefill(makeData({ json_schema: { value: {} } })
 eq('tools excluded', applyPrefill(makeData({ tools: [{ type: 'function' }] }), ON).reason, REASON.TOOLS_PRESENT);
 eq('single post-processing excluded', applyPrefill(
     makeData({ custom_prompt_post_processing: 'single' }), ON).reason, REASON.SINGLE_POST_PROCESSING);
-eq('no assistant tail in preset mode', applyPrefill(makeData(), ON).reason, REASON.NO_ASSISTANT_TAIL);
+eq('no assistant tail in preset mode', applyPrefill(
+    makeData(), { ...ON, source: 'preset' }).reason, REASON.NO_ASSISTANT_TAIL);
+eq('default source works without preset editing', DEFAULT_CONFIG.source, 'extension');
+eq('default appends rather than skipping', applyPrefill(makeData(), ON).reason, REASON.APPLIED);
 eq('empty prefill text in extension mode', applyPrefill(
     makeData(), { ...ON, source: 'extension', text: '   ' }).reason, REASON.EMPTY_PREFILL);
 
