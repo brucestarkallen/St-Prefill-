@@ -1,0 +1,52 @@
+.pfc_settings hr {
+    margin: 10px 0;
+    opacity: 0.25;
+}
+
+.pfc_settings label:not(.checkbox_label) {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.9em;
+    opacity: 0.85;
+}
+
+.pfc_hint {
+    display: block;
+    margin: 4px 0 2px;
+    opacity: 0.6;
+    font-size: 0.85em;
+    line-height: 1.35;
+}
+
+.pfc_row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.pfc_col {
+    flex: 1 1 140px;
+    min-width: 0;
+}
+
+.pfc_status {
+    margin: 6px 0 2px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.12);
+    font-size: 0.85em;
+    opacity: 0.8;
+    word-break: break-word;
+}
+
+.pfc_status.pfc_ok {
+    background: rgba(80, 200, 120, 0.16);
+    opacity: 1;
+}
+
+#pfc_text {
+    width: 100%;
+    margin-top: 6px;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: 0.85em;
+}

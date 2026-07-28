@@ -1,0 +1,166 @@
+/**
+ * Prefill Control — negative gate.
+ *
+ * A guard that has never failed is unproven. This reintroduces each bug in a
+ * scratch tree and asserts the gate rejects it with exit code 1.
+ *   node negative_test.mjs
+ */
+
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+/** Each mutation is [name, file, exactOldString, newString, gate]. */
+const MUTATIONS = [
+    ['quiet generations are no longer skipped', 'engine.js',
+        'return Boolean(cfg.applyToQuiet);', 'return true;'],
+    ['impersonation is no longer skipped', 'engine.js',
+        'return Boolean(cfg.applyToImpersonate);', 'return true;'],
+    ['tool requests are no longer skipped', 'engine.js',
+        'if (cfg.skipOnTools && hasTools(data)) {', 'if (false) {'],
+    ['tool_calls no longer count as tools', 'engine.js',
+        "return data.messages.some(m => m?.role === 'tool' || Array.isArray(m?.tool_calls));",
+        "return data.messages.some(m => m?.role === 'tool');"],
+    ['json schema requests are no longer skipped', 'engine.js',
+        'if (cfg.skipOnJsonSchema && data.json_schema) {', 'if (false) {'],
+    ['single post-processing is no longer skipped', 'engine.js',
+        'if (String(data.custom_prompt_post_processing || \'\') === SINGLE_POST_PROCESSING) {', 'if (false) {'],
+    ['dry runs are no longer skipped', 'engine.js',
+        'if (data.dryRun === true) {', 'if (false) {'],
+    ['merge guard no longer fires', 'engine.js',
+        'if (wouldBeMerged) {', 'if (false) {'],
+    ['merge guard fires without post-processing', 'engine.js',
+        '&& serverWillMerge(data.custom_prompt_post_processing)', '&& true'],
+    ['merge guard ignores predecessor role', 'engine.js',
+        "&& previous?.role === 'assistant'", '&& true'],
+    ['reasoning pattern is no longer anchored to the start', 'engine.js',
+        'return new RegExp(`^\\\\s*${open}([\\\\s\\\\S]*?)(?:${close})`);',
+        'return new RegExp(`\\\\s*${open}([\\\\s\\\\S]*?)(?:${close})`);'],
+    ['reasoning tag is no longer escaped', 'engine.js',
+        'const open = escapeRegExp(openTag);', 'const open = openTag;'],
+    ['content is not emptied after the split', 'engine.js',
+        'target.content = target.content.replace(pattern, \'\').trimStart();',
+        'target.content = target.content;'],
+    ['continuation flag is never written', 'engine.js',
+        'target[cfg.flagField] = true;', 'void cfg.flagField;'],
+    ['extension mode overwrites an existing assistant tail', 'engine.js',
+        "if (messages[index]?.role !== 'assistant') {", 'if (true) {'],
+    ['empty prefill text is accepted', 'engine.js',
+        'if (!text.trim()) {', 'if (false) {'],
+    ['version stamp drifts', 'manifest.json',
+        '"version": "1.0.0"', '"version": "9.9.9"'],
+
+    // index.js — proven by the load gate.
+    ['the hook is never registered', 'index.js',
+        'eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, onSettingsReady);',
+        'void onSettingsReady;', 'load_test.mjs'],
+    ['the hook is registered twice', 'index.js',
+        'eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, onSettingsReady);',
+        'eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, onSettingsReady);'
+        + ' eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, onSettingsReady);', 'load_test.mjs'],
+    ['the UI is never mounted', 'index.js',
+        "host.insertAdjacentHTML('beforeend', template());", 'void template;', 'load_test.mjs'],
+    ['engine exceptions escape into SillyTavern', 'index.js',
+        'try {\n        report = applyPrefill(generateData, settings());\n    } catch (error) {',
+        'try {\n        report = applyPrefill(generateData, settings());\n    } catch (error) {\n        throw error;\n    }\n    if (false) {', 'load_test.mjs'],
+    ['the extension ships switched on', 'engine.js',
+        'enabled: false,', 'enabled: true,', 'load_test.mjs'],
+    ['a control loses its pfc_ prefix', 'index.js',
+        'id="${UI}_mergeGuard"', 'id="mergeGuard"', 'load_test.mjs'],
+    ['settings changes stop persisting', 'index.js',
+        '            s[key] = e.target.checked;\n            persist();',
+        '            s[key] = e.target.checked;', 'load_test.mjs'],
+    ['the profile dropdown stops writing fields', 'index.js',
+        's.flagField = profile.flagField;', 'void profile.flagField;', 'load_test.mjs'],
+];
+
+const source = process.cwd();
+const TREE_FILES = ['engine.js', 'index.js', 'test.mjs', 'load_test.mjs', 'manifest.json', 'package.json'];
+
+/**
+ * Builds a scratch copy of the extension. node_modules is linked rather than
+ * copied so gates with real dependencies resolve them; without this a missing
+ * dependency exits 1 and every mutation reads as caught when nothing was.
+ * @returns {string} Scratch directory path
+ */
+function scratchTree() {
+    const dir = mkdtempSync(join(tmpdir(), 'pfc-neg-'));
+    for (const f of TREE_FILES) {
+        cpSync(join(source, f), join(dir, f));
+    }
+    symlinkSync(join(source, 'node_modules'), join(dir, 'node_modules'), 'dir');
+    return dir;
+}
+
+/**
+ * Runs a gate in a directory and returns its exit code.
+ * @param {string} dir Working directory
+ * @param {string} gate Gate filename
+ * @returns {number} Exit code
+ */
+function runGate(dir, gate) {
+    try {
+        execFileSync(process.execPath, [gate], { cwd: dir, stdio: 'pipe' });
+        return 0;
+    } catch (error) {
+        return error.status ?? -1;
+    }
+}
+
+let proven = 0;
+const unproven = [];
+const controlCount = new Set(MUTATIONS.map(m => m[4] || 'test.mjs')).size;
+
+// Control. An unmutated scratch tree must pass every gate this harness drives.
+// If it does not, a mutation exiting 1 proves nothing about the mutation.
+for (const gate of [...new Set(MUTATIONS.map(m => m[4] || 'test.mjs'))]) {
+    const dir = scratchTree();
+    try {
+        const code = runGate(dir, gate);
+        if (code === 0) {
+            proven++;
+        } else {
+            unproven.push(`CONTROL ${gate} :: unmutated tree returned ${code}, expected 0 — this harness cannot prove anything`);
+        }
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+if (unproven.length) {
+    console.error(`\nFAIL — harness control run failed:\n`);
+    for (const u of unproven) console.error(`  \u2717 ${u}`);
+    process.exit(1);
+}
+
+for (const [name, file, oldStr, newStr, gate = 'test.mjs'] of MUTATIONS) {
+    const dir = scratchTree();
+    try {
+        const target = join(dir, file);
+        const content = readFileSync(target, 'utf8');
+        const occurrences = content.split(oldStr).length - 1;
+        if (occurrences !== 1) {
+            unproven.push(`${name} :: anchor matched ${occurrences} times in ${file}, expected exactly 1`);
+            continue;
+        }
+        writeFileSync(target, content.replace(oldStr, newStr));
+
+        const exitCode = runGate(dir, gate);
+
+        if (exitCode === 1) {
+            proven++;
+        } else {
+            unproven.push(`${name} :: ${gate} returned ${exitCode}, expected 1 — this bug ships undetected`);
+        }
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+if (unproven.length) {
+    console.error(`\nFAIL — ${unproven.length} of ${MUTATIONS.length} mutations went undetected:\n`);
+    for (const u of unproven) console.error(`  ✗ ${u}`);
+    process.exit(1);
+}
+console.log(`PASS — ${proven - controlCount} mutations caught, ${controlCount} control runs clean`);
