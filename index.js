@@ -12,7 +12,7 @@
 import { applyPrefill, DEFAULT_CONFIG, PROFILES, REASON } from './engine.js';
 
 const MODULE = 'prefillControl';
-const EXTENSION_VERSION = '1.1.0';
+const EXTENSION_VERSION = '1.2.0';
 const UI = 'pfc';
 
 /** @returns {object} SillyTavern context */
@@ -36,6 +36,58 @@ function settings() {
 
 function persist() {
     ctx().saveSettingsDebounced();
+}
+
+// ---------------------------------------------------------------- reset
+
+const RESET_ARM_MS = 4000;
+let resetArmed = false;
+let resetTimer = null;
+
+function disarmReset() {
+    resetArmed = false;
+    if (resetTimer !== null) {
+        globalThis.clearTimeout(resetTimer);
+        resetTimer = null;
+    }
+    const button = document.getElementById(`${UI}_reset`);
+    if (button) {
+        button.textContent = 'Reset to defaults';
+        button.classList.remove(`${UI}_armed`);
+    }
+}
+
+/**
+ * Restores every setting to its shipped default.
+ *
+ * The stored object is emptied and refilled in place rather than replaced. Event
+ * handlers captured a reference to it at bind time; swapping the reference would
+ * leave every control writing to an object nothing reads.
+ */
+function resetToDefaults() {
+    const store = settings();
+    for (const key of Object.keys(store)) {
+        delete store[key];
+    }
+    Object.assign(store, DEFAULT_CONFIG);
+    persist();
+    disarmReset();
+    syncFromSettings();
+}
+
+function onResetClick() {
+    if (resetArmed) {
+        resetToDefaults();
+        return;
+    }
+    resetArmed = true;
+    const button = document.getElementById(`${UI}_reset`);
+    if (button) {
+        button.textContent = 'Tap again to confirm';
+        button.classList.add(`${UI}_armed`);
+    }
+    resetTimer = globalThis.setTimeout(disarmReset, RESET_ARM_MS);
+    resetTimer?.unref?.();
 }
 
 // ---------------------------------------------------------------- decision log
@@ -262,6 +314,11 @@ function template() {
         <input id="${UI}_logToConsole" type="checkbox"><span>Also write each decision to the browser console</span>
       </label>
 
+
+      <hr>
+      <div id="${UI}_reset" class="menu_button ${UI}_reset">Reset to defaults</div>
+      <small class="${UI}_hint">Restores every setting above. Tap twice to confirm. The decision log is history, not a setting, and is left alone — use Clear for that.</small>
+
       <small class="${UI}_hint">Prefill Control v${EXTENSION_VERSION}</small>
     </div>
   </div>
@@ -305,6 +362,8 @@ function bind() {
             persist();
         });
     }
+
+    document.getElementById(`${UI}_reset`)?.addEventListener('click', onResetClick);
 
     document.getElementById(`${UI}_logClear`)?.addEventListener('click', () => {
         decisionLog.length = 0;

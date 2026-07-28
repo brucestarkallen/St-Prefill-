@@ -73,7 +73,7 @@ const REQUIRED_IDS = [
     'pfc_source', 'pfc_text', 'pfc_thinkingEnabled', 'pfc_openTag', 'pfc_closeTag',
     'pfc_applyToContinue', 'pfc_applyToImpersonate', 'pfc_applyToQuiet',
     'pfc_skipOnTools', 'pfc_skipOnJsonSchema', 'pfc_mergeGuard', 'pfc_logToConsole',
-    'pfc_log', 'pfc_logCopy', 'pfc_logClear',
+    'pfc_log', 'pfc_logCopy', 'pfc_logClear', 'pfc_reset',
 ];
 for (const id of REQUIRED_IDS) {
     check(`control present: ${id}`, document.getElementById(id) !== null);
@@ -100,6 +100,12 @@ eq('checkbox reflects stored state', document.getElementById('pfc_enabled').chec
 eq('text field reflects stored state', document.getElementById('pfc_flagField').value, 'partial');
 
 // ---------------------------------------------------------------- toggling persists
+
+function syncFromSettingsProbe() {
+    // The module repaints on any bound input event; poke one to force it.
+    document.getElementById('pfc_flagField').value = stored.flagField;
+    fire('pfc_flagField', 'input');
+}
 
 function fire(id, event) {
     const el = document.getElementById(id);
@@ -213,6 +219,52 @@ eq('frozen tail left untouched', hostile.messages.at(-1).partial, undefined);
     for (let i = 0; i < 15; i++) hook(overflow);
     const entries = document.getElementById('pfc_log').textContent.split('────────────').length;
     eq('log is capped at ten entries', entries, 10);
+}
+
+// ---------------------------------------------------------------- reset to defaults
+
+function tapReset() {
+    document.getElementById('pfc_reset').dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+}
+
+{
+    // Dirty every kind of setting, plus a stale key from an older version.
+    stored.flagField = 'garbage';
+    stored.openTag = '[[oops]]';
+    stored.applyToQuiet = true;
+    stored.source = 'preset';
+    stored.someRemovedKeyFromAnOlderVersion = 'left behind';
+    syncFromSettingsProbe();
+
+    const logBefore = document.getElementById('pfc_log').textContent;
+
+    tapReset();
+    eq('one tap does not reset', stored.flagField, 'garbage');
+    check('one tap arms the button',
+        document.getElementById('pfc_reset').textContent.includes('confirm'));
+    check('armed button is marked', document.getElementById('pfc_reset').classList.contains('pfc_armed'));
+
+    const savesBeforeReset = saveCount;
+    tapReset();
+    check('reset itself persists', saveCount > savesBeforeReset, { before: savesBeforeReset, after: saveCount });
+    eq('second tap restores flag field', stored.flagField, 'partial');
+    eq('second tap restores open tag', stored.openTag, '<think>');
+    eq('second tap restores utility exclusion', stored.applyToQuiet, false);
+    eq('second tap restores prefill source', stored.source, 'extension');
+    eq('reset drops keys that are no longer settings', stored.someRemovedKeyFromAnOlderVersion, undefined);
+    check('button label restored', document.getElementById('pfc_reset').textContent === 'Reset to defaults');
+    check('armed marker cleared', !document.getElementById('pfc_reset').classList.contains('pfc_armed'));
+    eq('reset repaints the inputs', document.getElementById('pfc_flagField').value, 'partial');
+    eq('reset leaves the decision log alone', document.getElementById('pfc_log').textContent, logBefore);
+}
+
+{
+    // The stored object must be refilled in place. If reset swapped the reference,
+    // every control would still be writing to the object it captured at bind time.
+    document.getElementById('pfc_applyToImpersonate').checked = true;
+    fire('pfc_applyToImpersonate', 'change');
+    eq('controls still write to live settings after a reset', stored.applyToImpersonate, true);
+    eq('same object still in the store', context.extensionSettings.prefillControl, stored);
 }
 
 document.getElementById('pfc_enabled').checked = false;

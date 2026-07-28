@@ -18,7 +18,7 @@
  * Therefore any field written onto a message object here reaches the provider.
  */
 
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 /** Generation types SillyTavern can hand to sendOpenAIRequest. */
 export const GEN_TYPE = {

@@ -89,6 +89,8 @@ Console output is a separate opt-in checkbox for anyone running SillyTavern on a
 | Merge guard | on | See below |
 | Also write to browser console | off | Desktop only; the in-app log is always on |
 
+**Reset to defaults** sits at the bottom. It restores every setting above and takes two taps to confirm, so a mis-tap on a phone cannot wipe a working setup. Keys left behind by older versions are dropped. The decision log is history rather than a setting and is left alone — Clear handles that.
+
 ### Utility generations
 
 Summaries, keyword extraction, and other extension-driven calls reach the API as `type: 'quiet'`. A story prefill welded onto a summarisation request corrupts the summary. These are excluded by default and the setting exists only so you can opt in deliberately.
@@ -146,11 +148,16 @@ npx eslint engine.js index.js
 
 ## Changelog
 
+### 1.2.0
+
+- **Reset to defaults**, with a two-tap confirm and a four-second arming window. Restores every setting and drops keys left over from older versions.
+- 91 engine checks, 82 load checks, 39 proven mutations, 2 control runs.
+
 ### 1.1.0
 
 - **Decision log in the settings panel.** The last ten requests with the final wire message, a copy button, and a clear button. Console-only logging was unusable on mobile, where SillyTavern is most often run.
 - **Default prefill source is now the extension**, so enabling it works without editing a preset. Previously the default reported *"prompt does not end in an assistant message"* on a normal chat, which is the usual shape of a prompt.
-- 91 engine checks, 66 load checks, 32 proven mutations, 2 control runs.
+- 91 engine checks, 66 load checks, 32 proven mutations.
 
 ### 1.0.0
 
