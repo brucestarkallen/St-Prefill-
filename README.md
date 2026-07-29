@@ -138,6 +138,7 @@ So a field written on a message object here reaches the provider unchanged, for 
 ```
 node test.mjs           # engine logic
 node load_test.mjs      # real module against a mocked SillyTavern + jsdom
+node fuzz_test.mjs      # seeded fuzz over the wire invariants
 node negative_test.mjs  # reintroduces each bug and proves the gates catch it
 npx eslint engine.js index.js
 ```
@@ -148,10 +149,21 @@ npx eslint engine.js index.js
 
 ## Changelog
 
+### 1.3.0
+
+Audit release. Five defects found and fixed.
+
+- **Field names are validated before anything is touched.** `flagField` and `reasoningField` are free-text. Typing `content` produced `content: true` — a type error at the provider that destroyed the prefill in the same stroke; `role` produced an invalid role. Surrounding whitespace was worse: it serialised as a key the provider silently ignores while the panel still reported *Applied*. Reserved and malformed names now skip with an explanation, and names are trimmed.
+- **The decision log no longer keeps message fields by reference.** A multimodal message painted about 60 kB of base64 image data into the panel and pinned the payload in memory. Object fields are flattened to bounded text.
+- **A second load no longer mounts a duplicate copy.** Re-importing registered a second hook and a second settings panel with duplicate element ids.
+- **Startup polls instead of assuming.** If SillyTavern's context was not ready by `DOMContentLoaded`, initialisation threw and the extension was permanently dead — no hook, no UI, no retry. The hook is now registered as soon as the context appears.
+- **A late settings container no longer costs the UI permanently.** It is waited for separately, so prefill works even while the panel is still arriving.
+- 131 engine checks, 100 load checks, 60000 fuzz runs, 47 proven mutations, 3 control runs.
+
 ### 1.2.0
 
 - **Reset to defaults**, with a two-tap confirm and a four-second arming window. Restores every setting and drops keys left over from older versions.
-- 91 engine checks, 82 load checks, 39 proven mutations, 2 control runs.
+- 91 engine checks, 82 load checks, 39 proven mutations.
 
 ### 1.1.0
 

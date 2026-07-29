@@ -5,9 +5,10 @@ Working notes for anyone — human or model — changing this repository.
 ## Run the gate before every push
 
 ```bash
-node test.mjs           # engine logic          → 91 checks
-node load_test.mjs      # module + DOM + wiring → 82 checks
-node negative_test.mjs  # 39 mutations, 2 control runs
+node test.mjs           # engine logic          → 131 checks
+node load_test.mjs      # module + DOM + wiring → 100 checks
+node fuzz_test.mjs      # 60000 seeded runs over wire invariants
+node negative_test.mjs  # 47 mutations, 3 control runs
 npx eslint engine.js index.js
 ```
 
@@ -36,6 +37,7 @@ Bump on every push. Add a `README.md` changelog entry in the same commit.
 | `index.js` | Hook registration, settings UI, persistence. |
 | `test.mjs` | Drives `engine.js` on realistic `generate_data` shapes. |
 | `load_test.mjs` | Imports `index.js` against a mocked context and jsdom. |
+| `fuzz_test.mjs` | Seeded fuzz over engine invariants. |
 | `negative_test.mjs` | Mutation harness. |
 
 Keep the split. Anything decision-shaped belongs in `engine.js` where the gate
@@ -72,6 +74,23 @@ here must be visible in the UI. A console-only affordance is not a diagnostic.
 captures a reference at mount time. Swapping `extensionSettings[MODULE]` for a
 fresh object leaves every control writing to something nothing reads — a bug
 that looks like "settings do not save" long after the reset that caused it.
+
+**Field names are user input, so validate before mutating.** `flagField` and
+`reasoningField` are free-text boxes. Writing to `content` or `role` replaces
+part of the message; an untrimmed name serialises as a key the provider ignores
+while the UI still reports success. `normaliseFieldName()` runs before anything
+is touched, and `RESERVED_FIELDS` is the list.
+
+**Nothing enters the decision log by reference.** `summariseValue()` flattens
+objects to bounded text. A multimodal message carries base64 image data, and
+holding it live paints tens of thousands of characters into the panel and pins
+the payload in memory.
+
+**Initialisation polls; it never assumes.** Extension load order is not
+guaranteed. Reading the SillyTavern context before it exists throws, which
+leaves the extension permanently dead with no hook, no UI, and no retry. The
+hook is registered as soon as the context appears, and the UI mounts separately
+once the settings container appears. `MOUNT_FLAG` blocks a duplicate load.
 
 **Reason codes are API.** `REASON` strings are asserted in the gate and shown in
 the UI status line. Renaming one is a breaking change to both.

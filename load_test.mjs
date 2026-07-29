@@ -50,6 +50,7 @@ globalThis.document = dom.window.document;
 globalThis.SillyTavern = { getContext: () => context };
 
 const mod = await import('./index.js');
+await mod.ready;
 
 // ---------------------------------------------------------------- module surface
 
@@ -184,6 +185,21 @@ eq('utility generation left untouched', quiet.messages.at(-1).partial, undefined
 eq('utility generation content untouched', quiet.messages.at(-1).content, '<think>I should continue the story.');
 check('status reports the skip', document.getElementById('pfc_status').textContent.includes('excluded'));
 
+// A multimodal message must not paint its payload into the panel.
+{
+    const blob = 'A'.repeat(60000);
+    const multimodal = {
+        type: 'normal',
+        custom_prompt_post_processing: '',
+        messages: [{ role: 'assistant', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${blob}` } }] }],
+    };
+    hook(multimodal);
+    const panel = document.getElementById('pfc_log').textContent;
+    check('log never paints a raw payload', !panel.includes('A'.repeat(1000)));
+    check('log entry stays bounded', panel.length < 4000, { length: panel.length });
+    check('log flattens object fields to text', panel.includes('chars)'));
+}
+
 const malformed = { type: 'normal', messages: null };
 let threw = false;
 try { hook(malformed); } catch { threw = true; }
@@ -276,6 +292,63 @@ const offData = {
 };
 hook(offData);
 eq('disabled hook is inert', offData.messages.at(-1).content, '<think>x');
+
+// ---------------------------------------------------------------- field name validation
+
+{
+    const cases = [
+        ['content', 'reserved key rejected'],
+        ['role', 'role rejected'],
+        ['__proto__', 'proto rejected'],
+        ['tool_calls', 'tool_calls rejected'],
+        ['has space', 'invalid identifier rejected'],
+    ];
+    document.getElementById('pfc_enabled').checked = true;
+    fire('pfc_enabled', 'change');
+    for (const [name, label] of cases) {
+        document.getElementById('pfc_flagField').value = name;
+        fire('pfc_flagField', 'input');
+        const data = {
+            type: 'normal',
+            custom_prompt_post_processing: '',
+            messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: '<think>seed' }],
+        };
+        hook(data);
+        const tail = data.messages.at(-1);
+        eq(`${label}: message untouched`, tail.content, '<think>seed');
+        eq(`${label}: role intact`, tail.role, 'assistant');
+    }
+    check('status explains the bad field name',
+        document.getElementById('pfc_status').textContent.toLowerCase().includes('field name'));
+
+    document.getElementById('pfc_flagField').value = '  partial  ';
+    fire('pfc_flagField', 'input');
+    const trimmed = {
+        type: 'normal',
+        custom_prompt_post_processing: '',
+        messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: '<think>seed' }],
+    };
+    hook(trimmed);
+    eq('surrounding whitespace is trimmed, not sent as a dead key',
+        Object.keys(trimmed.messages.at(-1)).sort(), ['content', 'partial', 'reasoning_content', 'role']);
+
+    document.getElementById('pfc_flagField').value = 'partial';
+    fire('pfc_flagField', 'input');
+}
+
+// ---------------------------------------------------------------- double load
+
+{
+    const before = handlers.get('chat_completion_settings_ready').length;
+    const drawersBefore = document.querySelectorAll('.pfc_settings').length;
+    const second = await import('./index.js?duplicate=1');
+    await second.ready;
+    eq('a second load registers no extra hook',
+        handlers.get('chat_completion_settings_ready').length, before);
+    eq('a second load mounts no duplicate UI',
+        document.querySelectorAll('.pfc_settings').length, drawersBefore);
+    eq('no duplicate control ids', document.querySelectorAll('#pfc_enabled').length, 1);
+}
 
 // ---------------------------------------------------------------- result
 

@@ -6,6 +6,8 @@
  */
 
 import {
+    normaliseFieldName,
+    RESERVED_FIELDS,
     applyPrefill,
     buildReasoningPattern,
     escapeRegExp,
@@ -293,6 +295,47 @@ eq('empty prefill text in extension mode', applyPrefill(
     eq('second pass is a no-op', JSON.stringify(data.messages), first);
 }
 
+// ---------------------------------------------------------------- field name validation
+
+for (const reserved of RESERVED_FIELDS) {
+    check(`reserved field rejected: ${reserved}`, normaliseFieldName(reserved).valid === false);
+}
+check('empty field name is valid and means "none"', normaliseFieldName('').valid === true);
+eq('whitespace-only field name normalises to none', normaliseFieldName('   ').name, '');
+eq('surrounding whitespace trimmed', normaliseFieldName('  partial  ').name, 'partial');
+check('inner space rejected', normaliseFieldName('has space').valid === false);
+check('leading digit rejected', normaliseFieldName('1partial').valid === false);
+check('hyphen rejected', normaliseFieldName('reasoning-content').valid === false);
+check('underscore accepted', normaliseFieldName('reasoning_content').valid === true);
+check('leading underscore accepted', normaliseFieldName('_x').valid === true);
+
+for (const bad of ['content', 'role', '__proto__', 'tool_calls', 'has space']) {
+    const data = makeData();
+    data.messages.push({ role: 'assistant', content: '<think>seed' });
+    const before = JSON.stringify(data.messages);
+    const report = applyPrefill(data, { ...ON, flagField: bad });
+    eq(`bad flag field skips: ${bad}`, report.reason, REASON.BAD_FIELD_NAME);
+    eq(`bad flag field leaves the request untouched: ${bad}`, JSON.stringify(data.messages), before);
+    check(`bad flag field explains itself: ${bad}`, typeof report.detail.error === 'string' && report.detail.error.length > 0);
+}
+
+for (const bad of ['role', 'content', 'name']) {
+    const data = makeData();
+    data.messages.push({ role: 'assistant', content: '<think>seed' });
+    const before = JSON.stringify(data.messages);
+    const report = applyPrefill(data, { ...ON, reasoningField: bad });
+    eq(`bad reasoning field skips: ${bad}`, report.reason, REASON.BAD_FIELD_NAME);
+    eq(`bad reasoning field leaves the request untouched: ${bad}`, JSON.stringify(data.messages), before);
+}
+
+{
+    const data = makeData();
+    data.messages.push({ role: 'assistant', content: '<think>seed' });
+    applyPrefill(data, { ...ON, flagField: '  partial  ', reasoningField: ' reasoning_content ' });
+    eq('field names are trimmed before use',
+        Object.keys(data.messages.at(-1)).sort(), ['content', 'partial', 'reasoning_content', 'role']);
+}
+
 // ---------------------------------------------------------------- profiles
 
 check('every profile has both fields', Object.values(PROFILES).every(
@@ -302,6 +345,8 @@ eq('deepseek profile', [PROFILES.deepseek.flagField, PROFILES.deepseek.reasoning
 eq('claude profile is native', [PROFILES.claude.flagField, PROFILES.claude.reasoningField], ['', '']);
 check('no profile mentions a specific model version', Object.values(PROFILES).every(
     p => !/k2|k3|glm-|gpt-|sonnet|opus/i.test(p.label + p.flagField + p.reasoningField)));
+check('every profile field name is usable', Object.values(PROFILES).every(
+    p => normaliseFieldName(p.flagField).valid && normaliseFieldName(p.reasoningField).valid));
 
 // ---------------------------------------------------------------- version stamp
 

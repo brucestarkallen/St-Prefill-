@@ -18,7 +18,7 @@
  * Therefore any field written onto a message object here reaches the provider.
  */
 
-export const ENGINE_VERSION = '1.2.0';
+export const ENGINE_VERSION = '1.3.0';
 
 /** Generation types SillyTavern can hand to sendOpenAIRequest. */
 export const GEN_TYPE = {
@@ -83,7 +83,43 @@ export const REASON = {
     NO_ASSISTANT_TAIL: 'no-assistant-tail',
     EMPTY_PREFILL: 'empty-prefill',
     NOTHING_TO_DO: 'nothing-to-do',
+    BAD_FIELD_NAME: 'bad-field-name',
 };
+
+/**
+ * Message keys that must never be used as a continuation flag or reasoning
+ * field. Writing to any of these replaces part of the message itself — a
+ * `flagField` of "content" produces `content: true`, which is a type error at
+ * the provider and destroys the prefill in the same stroke.
+ */
+export const RESERVED_FIELDS = Object.freeze([
+    'role', 'content', 'name', 'tool_calls', 'tool_call_id', 'refusal',
+    '__proto__', 'constructor', 'prototype',
+]);
+
+/**
+ * Normalises a user-typed field name and reports whether it is usable.
+ *
+ * Whitespace is the quiet failure this exists for: a field named " partial "
+ * serialises as a key the provider ignores, so the extension reports success
+ * while nothing happens.
+ *
+ * @param {string} raw Raw field name from settings
+ * @returns {{name: string, valid: boolean, error: string}} Normalised result
+ */
+export function normaliseFieldName(raw) {
+    const name = String(raw ?? '').trim();
+    if (!name) {
+        return { name: '', valid: true, error: '' };
+    }
+    if (RESERVED_FIELDS.includes(name)) {
+        return { name, valid: false, error: `"${name}" is part of the message itself` };
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        return { name, valid: false, error: `"${name}" is not a valid field name` };
+    }
+    return { name, valid: true, error: '' };
+}
 
 /**
  * Escapes a string for literal use inside a RegExp.
@@ -172,6 +208,18 @@ export function applyPrefill(data, userConfig) {
         return { applied: false, reason: REASON.SINGLE_POST_PROCESSING, detail };
     }
 
+    // Field names are user-typed. Validate before touching the request, so an
+    // unusable name skips cleanly instead of corrupting the message.
+    const flag = normaliseFieldName(cfg.flagField);
+    const reasoning = normaliseFieldName(cfg.reasoningField);
+    if (!flag.valid || !reasoning.valid) {
+        return {
+            applied: false,
+            reason: REASON.BAD_FIELD_NAME,
+            detail: { error: flag.valid ? reasoning.error : flag.error },
+        };
+    }
+
     const messages = data.messages;
     let index = messages.length - 1;
 
@@ -193,14 +241,14 @@ export function applyPrefill(data, userConfig) {
 
     // Thinking split. Only meaningful for string content; multimodal arrays are
     // left alone and only receive the continuation flag.
-    if (cfg.thinkingEnabled && cfg.reasoningField && typeof target.content === 'string') {
+    if (cfg.thinkingEnabled && reasoning.name && typeof target.content === 'string') {
         const pattern = buildReasoningPattern(cfg.openTag, cfg.closeTag);
         const match = target.content.match(pattern);
         if (match) {
-            target[cfg.reasoningField] = match[1].trim();
+            target[reasoning.name] = match[1].trim();
             target.content = target.content.replace(pattern, '').trimStart();
-            detail.reasoningField = cfg.reasoningField;
-            detail.reasoningLength = target[cfg.reasoningField].length;
+            detail.reasoningField = reasoning.name;
+            detail.reasoningLength = target[reasoning.name].length;
         }
     }
 
@@ -221,10 +269,10 @@ export function applyPrefill(data, userConfig) {
 
     if (wouldBeMerged) {
         previous.content = `${previous.content}\n\n${target.content}`;
-        if (cfg.reasoningField && target[cfg.reasoningField]) {
-            const carried = target[cfg.reasoningField];
-            previous[cfg.reasoningField] = previous[cfg.reasoningField]
-                ? `${previous[cfg.reasoningField]}\n\n${carried}`
+        if (reasoning.name && target[reasoning.name]) {
+            const carried = target[reasoning.name];
+            previous[reasoning.name] = previous[reasoning.name]
+                ? `${previous[reasoning.name]}\n\n${carried}`
                 : carried;
         }
         messages.splice(index, 1);
@@ -234,12 +282,12 @@ export function applyPrefill(data, userConfig) {
     }
 
     // Continuation flag.
-    if (cfg.flagField) {
-        target[cfg.flagField] = true;
-        detail.flagField = cfg.flagField;
+    if (flag.name) {
+        target[flag.name] = true;
+        detail.flagField = flag.name;
     }
 
-    if (!cfg.flagField && !detail.reasoningField && !detail.appended) {
+    if (!flag.name && !detail.reasoningField && !detail.appended) {
         return { applied: false, reason: REASON.NOTHING_TO_DO, detail };
     }
 

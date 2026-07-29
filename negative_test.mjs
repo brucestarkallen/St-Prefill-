@@ -43,13 +43,13 @@ const MUTATIONS = [
         'target.content = target.content.replace(pattern, \'\').trimStart();',
         'target.content = target.content;'],
     ['continuation flag is never written', 'engine.js',
-        'target[cfg.flagField] = true;', 'void cfg.flagField;'],
+        'target[flag.name] = true;', 'void flag.name;'],
     ['extension mode overwrites an existing assistant tail', 'engine.js',
         "if (messages[index]?.role !== 'assistant') {", 'if (true) {'],
     ['empty prefill text is accepted', 'engine.js',
         'if (!text.trim()) {', 'if (false) {'],
     ['version stamp drifts', 'manifest.json',
-        '"version": "1.2.0"', '"version": "9.9.9"'],
+        '"version": "1.3.0"', '"version": "9.9.9"'],
     ['the default stops working without preset editing', 'engine.js',
         "source: 'extension',", "source: 'preset',"],
 
@@ -62,7 +62,8 @@ const MUTATIONS = [
         'eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, onSettingsReady);'
         + ' eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, onSettingsReady);', 'load_test.mjs'],
     ['the UI is never mounted', 'index.js',
-        "host.insertAdjacentHTML('beforeend', template());", 'void template;', 'load_test.mjs'],
+        "document.getElementById('extensions_settings').insertAdjacentHTML('beforeend', template());",
+        'void template;', 'load_test.mjs'],
     ['engine exceptions escape into SillyTavern', 'index.js',
         'try {\n        report = applyPrefill(generateData, settings());\n    } catch (error) {',
         'try {\n        report = applyPrefill(generateData, settings());\n    } catch (error) {\n        throw error;\n    }\n    if (false) {', 'load_test.mjs'],
@@ -81,12 +82,29 @@ const MUTATIONS = [
         'record(report, generateData);\n    renderStatus();\n    renderLog();',
         'record(report, generateData);\n    renderStatus();', 'load_test.mjs'],
     ['the log stops truncating long fields', 'index.js',
-        '? `${value.slice(0, LOG_FIELD_CHARS)}… (+${value.length - LOG_FIELD_CHARS} chars)`',
-        '? value', 'load_test.mjs'],
+        'return text.length > LOG_FIELD_CHARS', 'return false', 'load_test.mjs'],
     ['the log grows without bound', 'index.js',
         'if (decisionLog.length > LOG_LIMIT) {', 'if (false) {', 'load_test.mjs'],
     ['clearing the log stops working', 'index.js',
         'decisionLog.length = 0;', 'void decisionLog;', 'load_test.mjs'],
+    // Defects found in the 1.3.0 audit.
+    ['reserved field names are accepted again', 'engine.js',
+        'if (RESERVED_FIELDS.includes(name)) {', 'if (false) {'],
+    ['reserved field names slip past the fuzz invariants', 'engine.js',
+        'if (RESERVED_FIELDS.includes(name)) {', 'if (false) {', 'fuzz_test.mjs'],
+    ['a truthy stand-in is written instead of true', 'engine.js',
+        'target[flag.name] = true;', "target[flag.name] = 1;", 'fuzz_test.mjs'],
+    ['field names are no longer shape-checked', 'engine.js',
+        'if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {', 'if (false) {'],
+    ['field names are no longer trimmed', 'engine.js',
+        "const name = String(raw ?? '').trim();", "const name = String(raw ?? '');"],
+    ['validation runs after the request is already mutated', 'engine.js',
+        'if (!flag.valid || !reasoning.valid) {', 'if (false) {'],
+    ['the log keeps object fields by reference', 'index.js',
+        "    let text;\n    if (typeof value === 'string') {\n        text = value;\n    } else {\n        try {\n            text = JSON.stringify(value);\n        } catch {\n            text = '[value could not be read]';\n        }\n    }",
+        "    if (typeof value !== 'string') {\n        return value;\n    }\n    const text = value;", 'load_test.mjs'],
+    ['a second load mounts a duplicate copy', 'index.js',
+        'if (globalThis[MOUNT_FLAG]) {', 'if (false) {', 'load_test.mjs'],
     ['reset fires on a single tap with no confirmation', 'index.js',
         'if (resetArmed) {', 'if (true) {', 'load_test.mjs'],
     ['reset swaps the settings object instead of refilling it', 'index.js',
@@ -111,7 +129,7 @@ const MUTATIONS = [
 ];
 
 const source = process.cwd();
-const TREE_FILES = ['engine.js', 'index.js', 'test.mjs', 'load_test.mjs', 'manifest.json', 'package.json'];
+const TREE_FILES = ['engine.js', 'index.js', 'test.mjs', 'load_test.mjs', 'fuzz_test.mjs', 'manifest.json', 'package.json'];
 
 /**
  * Builds a scratch copy of the extension. node_modules is linked rather than

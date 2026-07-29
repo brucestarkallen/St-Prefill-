@@ -12,7 +12,7 @@
 import { applyPrefill, DEFAULT_CONFIG, PROFILES, REASON } from './engine.js';
 
 const MODULE = 'prefillControl';
-const EXTENSION_VERSION = '1.2.0';
+const EXTENSION_VERSION = '1.3.0';
 const UI = 'pfc';
 
 /** @returns {object} SillyTavern context */
@@ -99,17 +99,45 @@ const LOG_FIELD_CHARS = 400;
 const decisionLog = [];
 
 /**
- * Copies a message with long strings truncated, so the log stays readable on a
- * phone and never holds a second copy of the whole prompt.
+ * Truncates one field for the log.
+ *
+ * Objects and arrays are flattened to text rather than kept by reference. A
+ * multimodal message holds base64 image data; storing it live would paint tens
+ * of thousands of characters into the panel and pin the payload in memory for
+ * as long as the entry survives.
+ *
+ * @param {*} value Field value
+ * @returns {*} Bounded, reference-free value
+ */
+function summariseValue(value) {
+    if (value === null || value === undefined || typeof value === 'boolean' || typeof value === 'number') {
+        return value;
+    }
+    let text;
+    if (typeof value === 'string') {
+        text = value;
+    } else {
+        try {
+            text = JSON.stringify(value);
+        } catch {
+            text = '[value could not be read]';
+        }
+    }
+    return text.length > LOG_FIELD_CHARS
+        ? `${text.slice(0, LOG_FIELD_CHARS)}… (+${text.length - LOG_FIELD_CHARS} chars)`
+        : text;
+}
+
+/**
+ * Copies a message with every field bounded, so the log stays readable on a
+ * phone and never holds a second copy of the prompt.
  * @param {object} message Wire message
  * @returns {object} Truncated copy
  */
 function summariseMessage(message) {
     const out = {};
     for (const [key, value] of Object.entries(message)) {
-        out[key] = typeof value === 'string' && value.length > LOG_FIELD_CHARS
-            ? `${value.slice(0, LOG_FIELD_CHARS)}… (+${value.length - LOG_FIELD_CHARS} chars)`
-            : value;
+        out[key] = summariseValue(value);
     }
     return out;
 }
@@ -189,6 +217,7 @@ const STATUS_TEXT = {
     [REASON.NO_ASSISTANT_TAIL]: 'Skipped: prompt does not end in an assistant message.',
     [REASON.EMPTY_PREFILL]: 'Skipped: prefill text is empty.',
     [REASON.NOTHING_TO_DO]: 'Skipped: both the flag field and thinking split are off.',
+    [REASON.BAD_FIELD_NAME]: 'Skipped: unusable field name.',
 };
 
 function renderStatus() {
@@ -202,6 +231,7 @@ function renderStatus() {
     if (lastReport.detail?.reasoningField) bits.push(`${lastReport.detail.reasoningField} (${lastReport.detail.reasoningLength} chars)`);
     if (lastReport.detail?.premerged) bits.push('merged into previous assistant turn');
     if (lastReport.detail?.appended) bits.push('prefill appended by extension');
+    if (lastReport.detail?.error) bits.push(lastReport.detail.error);
     el.textContent = bits.length ? `${text} — ${bits.join(', ')}` : text;
     el.classList.toggle(`${UI}_ok`, lastReport.applied);
 }
@@ -398,25 +428,77 @@ function bind() {
 
 // ---------------------------------------------------------------- init
 
-function init() {
-    const host = document.getElementById('extensions_settings');
-    if (!host) {
-        console.warn('[Prefill Control] extensions_settings not found; UI not mounted.');
-    } else {
-        host.insertAdjacentHTML('beforeend', template());
-        syncFromSettings();
-        bind();
+const MOUNT_FLAG = '__prefillControlMounted';
+const POLL_MS = 200;
+const CONTEXT_TIMEOUT_MS = 60000;
+const HOST_TIMEOUT_MS = 60000;
+
+function sleep(ms) {
+    return new Promise((resolve) => {
+        const timer = globalThis.setTimeout(resolve, ms);
+        timer?.unref?.();
+    });
+}
+
+/**
+ * Waits for a condition, polling until it holds or the deadline passes.
+ * @param {Function} predicate Condition to test
+ * @param {number} timeoutMs Deadline in milliseconds
+ * @returns {Promise<boolean>} Whether the condition held
+ */
+async function waitFor(predicate, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        if (predicate()) {
+            return true;
+        }
+        if (Date.now() >= deadline) {
+            return false;
+        }
+        await sleep(POLL_MS);
+    }
+}
+
+/**
+ * Registers the hook as soon as a context exists, then mounts the UI once
+ * SillyTavern has created its settings container.
+ *
+ * Both are polled rather than assumed. Extension load order is not guaranteed,
+ * and reading the context before it exists throws — which would leave the
+ * extension permanently dead with no hook, no UI, and no retry.
+ *
+ * @returns {Promise<boolean>} Whether the hook was registered
+ */
+async function start() {
+    if (globalThis[MOUNT_FLAG]) {
+        console.warn('[Prefill Control] already loaded; skipping duplicate initialisation.');
+        return false;
+    }
+    globalThis[MOUNT_FLAG] = true;
+
+    const haveContext = await waitFor(() => Boolean(globalThis.SillyTavern?.getContext), CONTEXT_TIMEOUT_MS);
+    if (!haveContext) {
+        globalThis[MOUNT_FLAG] = false;
+        console.error('[Prefill Control] SillyTavern context never appeared; extension inactive.');
+        return false;
     }
 
     const { eventSource, eventTypes } = ctx();
     eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, onSettingsReady);
     console.info(`[Prefill Control] v${EXTENSION_VERSION} ready.`);
+
+    const haveHost = await waitFor(() => Boolean(document.getElementById('extensions_settings')), HOST_TIMEOUT_MS);
+    if (!haveHost) {
+        console.warn('[Prefill Control] settings container never appeared; prefill is active but has no UI.');
+        return true;
+    }
+
+    document.getElementById('extensions_settings').insertAdjacentHTML('beforeend', template());
+    syncFromSettings();
+    bind();
+    return true;
 }
 
-if (globalThis.SillyTavern?.getContext) {
-    init();
-} else {
-    globalThis.addEventListener('DOMContentLoaded', init, { once: true });
-}
+const ready = start();
 
-export { applyPrefill, EXTENSION_VERSION, MODULE };
+export { applyPrefill, EXTENSION_VERSION, MODULE, ready };
