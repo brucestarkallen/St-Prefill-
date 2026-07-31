@@ -21,6 +21,11 @@ The flag differs by provider:
 | Custom / OpenAI-compatible | — | `reasoning_content` |
 | Anthropic | native, none needed | — |
 
+On SillyTavern's built-in **Moonshot** and **DeepSeek** sources the server sets
+the flag itself, in `addAssistantPrefix()`. Leaving the field empty there costs
+nothing. It matters on custom endpoints, OpenRouter, and proxies, where nothing
+sets it for you.
+
 **Thinking prefill** is the interesting case. Reasoning models emit two channels: `content` (what you read) and a reasoning channel (the scratchpad). Send a seed in the reasoning channel with `content` left empty and the model **continues the thought** rather than replacing its own reasoning:
 
 ```json
@@ -60,6 +65,22 @@ Settings appear under **Extensions → Prefill Control**. It ships **disabled**.
 
 The status line under the toggle reports what happened on the last request — applied, or which guard skipped it and why.
 
+## Check it works
+
+**Run test**, in the settings panel, builds a request shaped like a real one on
+your install, puts it through the same engine and the same server-side
+post-processing a real request goes through, and prints the final message
+exactly as the provider receives it. Nothing is sent anywhere.
+
+It reports both situations separately — a normal chat whose prompt ends with
+your message, and a prompt that already ends with an assistant message — because
+a configuration can work in one and not the other. Once you have sent at least
+one message it models your real source, post-processing and thinking setting
+rather than assuming defaults, and says which it is doing.
+
+A verdict of *PREFILLED, BUT … WILL NOT ARRIVE* means the engine did its part
+and the server will undo it. That is what the merge guard is for.
+
 ## The decision log
 
 The panel at the bottom of the settings holds the last ten requests, newest first, each showing the reason code and **the final message exactly as it goes on the wire**. That is the log. There is no browser console step, which matters on Android and iOS where devtools are not reachable.
@@ -81,6 +102,7 @@ Console output is a separate opt-in checkbox for anyone running SillyTavern on a
 | Prefill comes from | extension | `extension` appends the text box; `preset` uses the preset's own assistant tail |
 | Split leading thinking tag | on | Moves the tagged span into the reasoning field |
 | Open / close tag | `<think>` / `</think>` | Close tag optional; both are regex-escaped |
+| Keep the thinking channel open | on | Turns reasoning on for requests carrying a seed, and only those |
 | Apply to Continue | on | Marks the existing partial reply as a continuation |
 | Apply to Impersonate | off | Impersonation writes as the user, not the character |
 | Apply to utility generations | **off** | See below |
@@ -101,7 +123,11 @@ Extensions calling `ConnectionManagerRequestService.sendRequest` use a separate 
 
 SillyTavern's server-side prompt post-processing merges consecutive same-role messages, and the **earlier** object is the one that survives. A continuation flag written on a later assistant message would be silently discarded whenever the prompt tail happens to be two assistant turns.
 
-With the guard on, the merge is performed here first, so the flag lands on the surviving object and the server's merge becomes a no-op. Turn it off only if you have a reason to want two assistant messages on the wire.
+With the guard on, the merge is performed here first, so the flag lands on the surviving object and the server's merge becomes a no-op. Turn it off only if you have a reason to want two assistant messages on the wire — with it off, the panel will tell you the flag is not going to arrive rather than reporting a clean success.
+
+Whether the server merges is **not** the same question as which post-processing you selected. `sendDeepSeekRequest()`, `sendMinimaxRequest()` and the Perplexity branch each run their own post-processing regardless of that setting, so the guard reads the source as well as the setting.
+
+The guard also reproduces the server's name fold before deciding. `mergeMessages()` prepends `Name: ` to a message's content *before* it tests whether to squash it, so a thinking prefill whose content is empty is not empty by the time that test runs.
 
 Post-processing set to **Single user message** collapses the whole prompt into one user turn. Prefill is impossible there; the extension skips and says so rather than writing a flag onto a user message.
 
@@ -127,9 +153,9 @@ The hook is `CHAT_COMPLETION_SETTINGS_READY`, which fires on the assembled `gene
 
 - `ChatCompletion.getChat()` returns the array that becomes `generate_data.messages`
 - `sendOpenAIRequest()` emits the event on that object, then serialises it
-- `/api/backends/chat-completions/generate` copies `request.body.messages` **verbatim** into the outbound provider request
+- `/api/backends/chat-completions/generate` applies `custom_prompt_post_processing`, then hands the request to a per-source handler which may apply its own
 
-So a field written on a message object here reaches the provider unchanged, for every source routed through the generic OpenAI-compatible path.
+A field written on a message object here reaches the provider unchanged wherever nothing merges it away. Predicting that is most of what the engine does, and `st_sim.mjs` — a port of the server code — is what those predictions are checked against, so the gate asserts what the provider receives rather than what the engine believed it did. The same file backs **Run test**, so the panel shows you what the gate proves.
 
 ---
 
@@ -137,10 +163,11 @@ So a field written on a message object here reaches the provider unchanged, for 
 
 ```
 node test.mjs           # engine logic
+node wire_test.mjs      # engine output through a port of the SillyTavern server
 node load_test.mjs      # real module against a mocked SillyTavern + jsdom
 node fuzz_test.mjs      # seeded fuzz over the wire invariants
 node negative_test.mjs  # reintroduces each bug and proves the gates catch it
-npx eslint engine.js index.js
+npx eslint engine.js index.js st_sim.mjs
 ```
 
 `negative_test.mjs` runs an unmutated control tree through every gate first. If a control run does not exit 0, the harness fails rather than reporting mutations as caught.
@@ -148,6 +175,50 @@ npx eslint engine.js index.js
 ---
 
 ## Changelog
+
+### 1.4.0
+
+Audit release. Five defects, each reproduced against a port of the SillyTavern
+server before being fixed, and each now driving a mutation in the negative gate.
+
+- **The merge guard was blind to post-processing the server applies on its own.**
+  DeepSeek forces `semi_tools`, MiniMax `merge_tools` and Perplexity `strict`,
+  whatever the user selected. With post-processing set to *None* the guard stood
+  down, the server merged the tail into the message before it, and a thinking
+  prefill vanished from the wire entirely while the panel reported *Applied*.
+  The guard now reads the source as well as the setting.
+- **The merge guard tested the wrong content.** `mergeMessages()` folds `name`
+  into content before it decides whether to squash, so a thinking prefill —
+  whose content is deliberately empty — was not empty by the time it was tested.
+  Where character names are sent as a field, both the flag and the reasoning
+  seed were merged away and lost. The guard now folds names the way the server
+  does, which also makes its own merge byte-identical to the server's instead of
+  silently dropping a name prefix.
+- **The guard collapsed one assistant turn, not the run.** Three assistant
+  messages in a row left two, and the server merged those.
+- **A field name used for both the flag and the reasoning seed destroyed the
+  seed.** The flag is written after the split, so `reasoning_content` became
+  `true` and the panel called it a success. Colliding names are now refused.
+- **A reasoning seed could be sent into a thinking channel the request had
+  switched off.** `include_reasoning` is what the server maps to `thinking.type`
+  on Moonshot, DeepSeek and Z.AI and to `reasoning.exclude` on OpenRouter; with
+  it off the model ignores the seed or continues it as reply text. Requests
+  carrying a seed now open the channel, and only those.
+- **Skips no longer mutate.** Every reason to stand down is now evaluated before
+  anything is written, so a report of *skipped* means the request went out
+  exactly as SillyTavern built it. The fuzz gate asserts it byte for byte.
+- **A flag that cannot survive is no longer reported as a clean success.** With
+  the merge guard off the panel says so.
+- **A multimodal tail behind a merging server is refused** rather than flagged,
+  because the server rebuilds media through placeholder tokens and the flag
+  cannot be carried across by hand.
+- **In-panel guide**, explaining prefill, the continuation flag, content versus
+  thinking prefill, and every setting.
+- **Run test**, which puts your real settings through the real code path and
+  shows the message the provider receives.
+- 137 engine checks, 1907 wire checks over 560 provider/post-processing
+  combinations, 130 load checks, 60000 fuzz runs, 58 proven mutations, 4 control
+  runs.
 
 ### 1.3.0
 

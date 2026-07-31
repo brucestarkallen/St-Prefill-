@@ -9,12 +9,18 @@
  *   3. Content is only ever text or a multimodal array, never some other type.
  *   4. No reserved message key is ever written by a configurable field name.
  *   5. A continuation flag is exactly `true`, never a truthy stand-in.
+ *   6. A skip leaves the request byte-identical.
+ *   7. "Applied" always means at least one field was written.
+ *   8. `include_reasoning` is only ever turned on, and only alongside a seed.
+ *   9. Whatever the engine claims reached the tail is still there after the
+ *      server has post-processed the request.
  *
  * The generator is seeded, so a failure here reproduces exactly.
  *   node fuzz_test.mjs
  */
 
 import { applyPrefill, DEFAULT_CONFIG, RESERVED_FIELDS } from './engine.js';
+import { deliver, SOURCE_BEHAVIOUR } from './st_sim.mjs';
 
 const SEED = 0x5eed1e;
 const RUNS = 60000;
@@ -36,6 +42,8 @@ const TYPES = ['normal', 'swipe', 'regenerate', 'continue', 'impersonate', 'quie
 const TEXTS = ['<think>x', '', 'plain', '<think>'];
 const OPEN = ['<think>', '[[t]]', '', '('];
 const CLOSE = ['</think>', '', ')'];
+const SOURCES = Object.keys(SOURCE_BEHAVIOUR);
+const NAMES = [undefined, undefined, undefined, 'Seraphina'];
 
 let threw = 0;
 let violations = 0;
@@ -52,10 +60,20 @@ for (let i = 0; i < RUNS; i++) {
     const count = 1 + Math.floor(rand() * 4);
     const messages = [];
     for (let j = 0; j < count; j++) {
-        messages.push({ role: pick(ROLES), content: pick(CONTENTS) });
+        const message = { role: pick(ROLES), content: pick(CONTENTS) };
+        const name = pick(NAMES);
+        if (name) message.name = name;
+        messages.push(message);
     }
 
-    const data = { type: pick(TYPES), messages, custom_prompt_post_processing: pick(POST) };
+    const data = {
+        type: pick(TYPES),
+        messages,
+        custom_prompt_post_processing: pick(POST),
+        chat_completion_source: pick(SOURCES),
+        char_name: 'Seraphina',
+        include_reasoning: rand() < 0.5,
+    };
     if (rand() < 0.1) data.tools = [{ type: 'function' }];
     if (rand() < 0.1) data.json_schema = {};
 
@@ -74,6 +92,8 @@ for (let i = 0; i < RUNS; i++) {
 
     const beforeRoles = messages.map(m => m.role);
     const beforeLength = messages.length;
+    const beforeSnapshot = JSON.stringify(data);
+    const beforeReasoning = data.include_reasoning;
 
     let report;
     try {
@@ -113,6 +133,51 @@ for (let i = 0; i < RUNS; i++) {
         const tail = data.messages[report.detail.index];
         if (tail[report.detail.flagField] !== true) {
             fail(`run ${i}: flag is ${JSON.stringify(tail[report.detail.flagField])}, expected true`);
+        }
+    }
+
+    if (!report.applied && JSON.stringify(data) !== beforeSnapshot) {
+        fail(`run ${i}: skipped with "${report.reason}" but the request changed`);
+    }
+
+    if (report.applied
+        && !report.detail.flagField && !report.detail.reasoningField && !report.detail.appended) {
+        fail(`run ${i}: reported applied without writing anything`);
+    }
+
+    if (data.include_reasoning !== beforeReasoning) {
+        if (data.include_reasoning !== true || !report.detail.reasoningField) {
+            fail(`run ${i}: include_reasoning changed to ${data.include_reasoning} without a seed`);
+        }
+    }
+
+    if (report.applied && report.detail.reasoningField) {
+        const seeded = data.messages[report.detail.index][report.detail.reasoningField];
+        if (typeof seeded !== 'string' || !seeded.length) {
+            fail(`run ${i}: reasoning field is ${JSON.stringify(seeded)}`);
+        }
+    }
+
+    // Wire pass: does what the engine wrote survive the server? Multimodal
+    // content is excluded because the server rebuilds it through random tokens.
+    // With the merge guard off, a same-role tail being merged away is the
+    // documented consequence of turning it off, and the engine says so via
+    // detail.mergeRisk rather than pretending otherwise.
+    const textOnly = data.messages.every(m => typeof m.content === 'string' || m.content === undefined || m.content === null);
+    if (report.applied && textOnly && !report.detail.mergeRisk) {
+        let wire;
+        try {
+            wire = deliver(data);
+        } catch (error) {
+            fail(`run ${i}: server simulator threw: ${error.message}`);
+            continue;
+        }
+        const tail = wire.messages[wire.messages.length - 1];
+        if (report.detail.reasoningField && tail[report.detail.reasoningField] === undefined) {
+            fail(`run ${i}: reasoning lost in post-processing (${data.custom_prompt_post_processing}/${data.chat_completion_source})`);
+        }
+        if (report.detail.flagField && tail[report.detail.flagField] !== true) {
+            fail(`run ${i}: flag lost in post-processing (${data.custom_prompt_post_processing}/${data.chat_completion_source})`);
         }
     }
 }

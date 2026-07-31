@@ -91,3 +91,55 @@
     background: rgba(220, 90, 90, 0.22);
     border-color: rgba(220, 90, 90, 0.5);
 }
+
+.pfc_guide {
+    margin: 8px 0 2px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.10);
+    font-size: 0.85em;
+    line-height: 1.45;
+}
+
+.pfc_guide > summary {
+    cursor: pointer;
+    font-weight: bold;
+    opacity: 0.9;
+    list-style-position: outside;
+}
+
+.pfc_guide p {
+    margin: 8px 0;
+    opacity: 0.85;
+}
+
+.pfc_guide ul {
+    margin: 8px 0;
+    padding-left: 18px;
+}
+
+.pfc_guide li {
+    margin: 5px 0;
+    opacity: 0.85;
+}
+
+.pfc_guide code {
+    padding: 0 3px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.25);
+    font-family: var(--monoFontFamily, monospace);
+}
+
+.pfc_sample {
+    margin: 6px 0;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.25);
+    font-family: var(--monoFontFamily, monospace);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+#pfc_testOut {
+    max-height: 320px;
+}

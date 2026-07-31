@@ -10,9 +10,10 @@
  */
 
 import { applyPrefill, DEFAULT_CONFIG, PROFILES, REASON } from './engine.js';
+import { deliver } from './st_sim.mjs';
 
 const MODULE = 'prefillControl';
-const EXTENSION_VERSION = '1.3.0';
+const EXTENSION_VERSION = '1.4.0';
 const UI = 'pfc';
 
 /** @returns {object} SillyTavern context */
@@ -175,6 +176,35 @@ function formatLog() {
     }).join('\n\n────────────\n\n');
 }
 
+// ---------------------------------------------------------------- observed request shape
+
+/**
+ * What real requests on this install actually look like.
+ *
+ * The self test is only worth running if it reflects the user's own setup. A
+ * probe built from invented defaults would happily report success on a
+ * configuration they do not have. These are read from live requests, and until
+ * one has been seen the test says so instead of guessing.
+ */
+const observed = {
+    seen: false,
+    source: '',
+    postProcessing: '',
+    includeReasoning: null,
+    charName: '',
+};
+
+/**
+ * @param {object} generateData Live request
+ */
+function observe(generateData) {
+    observed.seen = true;
+    observed.source = String(generateData?.chat_completion_source ?? '');
+    observed.postProcessing = String(generateData?.custom_prompt_post_processing ?? '');
+    observed.includeReasoning = Boolean(generateData?.include_reasoning);
+    observed.charName = String(generateData?.char_name ?? '');
+}
+
 // ---------------------------------------------------------------- the hook
 
 let lastReport = null;
@@ -192,6 +222,7 @@ function onSettingsReady(generateData) {
     }
 
     lastReport = report;
+    observe(generateData);
     record(report, generateData);
     renderStatus();
     renderLog();
@@ -243,6 +274,145 @@ function renderLog() {
     }
 }
 
+// ---------------------------------------------------------------- self test
+
+/**
+ * Builds a probe request shaped like a real one on this install.
+ *
+ * @param {boolean} withAssistantTail Whether the prompt already ends in an assistant turn
+ * @returns {object} A generate_data lookalike
+ */
+function buildProbe(withAssistantTail) {
+    const messages = [
+        { role: 'system', content: 'You are narrating a story.' },
+        { role: 'user', content: 'Go on.' },
+    ];
+    if (withAssistantTail) {
+        messages.push({ role: 'assistant', content: '<think>Consider the guard.</think>He stepped through.' });
+    }
+    return {
+        type: 'normal',
+        messages,
+        chat_completion_source: observed.source || 'custom',
+        custom_prompt_post_processing: observed.postProcessing || '',
+        include_reasoning: observed.includeReasoning === null ? true : observed.includeReasoning,
+        char_name: observed.charName || '',
+    };
+}
+
+/**
+ * Runs one probe end to end: the real engine, then the real server pipeline.
+ *
+ * The verdict is taken from the delivered message rather than the engine's own
+ * report, because the failure worth catching is the one where the engine
+ * applied something correctly and the server discarded it.
+ *
+ * @param {string} title Scenario name
+ * @param {boolean} withAssistantTail Whether the prompt ends in an assistant turn
+ * @returns {string} Rendered result
+ */
+function runProbe(title, withAssistantTail) {
+    const data = buildProbe(withAssistantTail);
+    let report;
+    try {
+        report = applyPrefill(data, settings());
+    } catch (error) {
+        return `${title}\n  FAILED — the engine threw: ${error.message}`;
+    }
+
+    let wire;
+    try {
+        wire = deliver(data);
+    } catch (error) {
+        return `${title}\n  FAILED — could not model the request: ${error.message}`;
+    }
+
+    const tail = wire.messages[wire.messages.length - 1];
+    const lines = [title];
+
+    if (!report.applied) {
+        lines.push(`  NOT PREFILLED — ${STATUS_TEXT[report.reason] || report.reason}`);
+        if (report.detail?.error) {
+            lines.push(`  ${report.detail.error}`);
+        }
+        lines.push('  The request goes out exactly as SillyTavern built it.');
+        return lines.join('\n');
+    }
+
+    const arrived = [];
+    const lost = [];
+    if (report.detail.flagField) {
+        (tail?.[report.detail.flagField] === true ? arrived : lost).push(`${report.detail.flagField}: true`);
+    }
+    if (report.detail.reasoningField) {
+        const value = tail?.[report.detail.reasoningField];
+        (typeof value === 'string' && value.length ? arrived : lost).push(report.detail.reasoningField);
+    }
+    if (report.detail.appended) {
+        arrived.push('a final assistant message was added for you');
+    }
+
+    if (lost.length) {
+        lines.push(`  PREFILLED, BUT ${lost.join(' and ')} WILL NOT ARRIVE.`);
+        lines.push('  SillyTavern\u2019s server merges it into the message before it.');
+        lines.push('  Turn the merge guard on.');
+    } else {
+        lines.push(`  WORKS \u2014 ${arrived.join(', ')}.`);
+    }
+    if (report.detail.premerged) {
+        lines.push('  The merge guard combined the last two assistant turns, as it should.');
+    }
+    if (report.detail.thinkingForced) {
+        lines.push('  Thinking was switched on for this request, because a reasoning seed needs an open channel.');
+    }
+    if (wire.thinkingEnabled === false && report.detail.reasoningField) {
+        lines.push('  WARNING: the thinking channel is off, so the seed will be ignored.');
+    }
+    lines.push('  This is the final message as the provider receives it:');
+    lines.push(indent(JSON.stringify(tail, null, 2)));
+    return lines.join('\n');
+}
+
+/**
+ * @param {string} text Block of text
+ * @returns {string} The same text, indented
+ */
+function indent(text) {
+    return text.split('\n').map(line => `    ${line}`).join('\n');
+}
+
+/**
+ * @returns {string} The whole self-test report
+ */
+function selfTest() {
+    const s = settings();
+    const header = [];
+    if (!s.enabled) {
+        header.push('Prefill is switched off. This is what would happen with it on.');
+    }
+    header.push(observed.seen
+        ? `Modelled on your last real request: source "${observed.source || 'custom'}", `
+          + `post-processing "${observed.postProcessing || 'none'}", `
+          + `thinking ${observed.includeReasoning ? 'on' : 'off'}.`
+        : 'No real request seen yet, so this assumes an OpenAI-compatible endpoint '
+          + 'with no post-processing. Send one message, then run this again for an exact answer.');
+
+    return [
+        header.join('\n'),
+        '',
+        runProbe('1. A normal chat, where the prompt ends with your message:', false),
+        '',
+        runProbe('2. A prompt that already ends with an assistant message:', true),
+    ].join('\n');
+}
+
+function renderSelfTest() {
+    const el = document.getElementById(`${UI}_testOut`);
+    if (el) {
+        el.textContent = selfTest();
+    }
+}
+
 function template() {
     const profileOptions = Object.entries(PROFILES)
         .map(([key, p]) => `<option value="${key}">${p.label}</option>`)
@@ -262,6 +432,86 @@ function template() {
         <span>Enabled</span>
       </label>
       <div id="${UI}_status" class="${UI}_status">Off.</div>
+
+      <details class="${UI}_guide">
+        <summary>What all of this means</summary>
+
+        <p><b>Prefill</b> puts words in the model's mouth. A request normally ends
+        with your message and the model starts its reply from nothing. Prefill adds
+        one more message — an <i>assistant</i> message — at the very end, so the
+        model continues that text instead of starting its own.</p>
+
+        <p><b>The continuation flag</b> is the mark that tells the provider "this
+        assistant turn is not finished, keep writing it". Moonshot and Kimi call it
+        <code>partial</code>. DeepSeek's beta endpoint calls it <code>prefix</code>.
+        Most providers have no such flag and will continue a trailing assistant
+        message anyway — leave the box empty for those. If you use SillyTavern's
+        built-in Moonshot or DeepSeek source, the server already sets this itself,
+        so the box changes nothing there.</p>
+
+        <p><b>Content prefill vs thinking prefill.</b> A content prefill is words in
+        the reply itself. It works, but the model did not write them, and they sit
+        exactly where it decides what kind of task this is — so it locks in style and
+        any claim they contain. A <b>thinking prefill</b> puts the seed in the
+        model's reasoning channel and leaves the reply empty. The model keeps
+        reasoning normally; you have only nudged the first line of its scratchpad.
+        That is the lighter touch, and it is what this extension is mainly for.</p>
+
+        <p>SillyTavern cannot express a pure thinking prefill on its own: prompt
+        assembly throws away any message with empty content, so it never survives to
+        be sent. This extension does the split afterwards, where it sticks.</p>
+
+        <p><b>How the split works.</b> Write your seed starting with the open tag:</p>
+        <pre class="${UI}_sample">&lt;think&gt;I should continue the story.</pre>
+        <p>Everything from the tag to the closing tag — or to the end if you leave it
+        open — is moved into the reasoning field. Whatever is left stays in the
+        reply. In that example nothing is left, so the reply goes out empty and only
+        the scratchpad is seeded. That is the shape you want.</p>
+
+        <p><b>Every setting, briefly:</b></p>
+        <ul>
+          <li><b>Field mapping</b> — fills in the two field names for a known
+          provider. It is a shortcut, not a behaviour: nothing is guessed from your
+          model name when the request is sent.</li>
+          <li><b>Continuation flag</b> — the field name for the flag above. Empty
+          writes none.</li>
+          <li><b>Reasoning field</b> — where the seed goes. Empty turns the split
+          off. It must not be the same as the flag field.</li>
+          <li><b>Prefill comes from</b> — <i>This extension</i> appends the text box
+          below whenever the prompt does not already end with an assistant message,
+          so nothing in your preset needs editing. <i>The preset's final assistant
+          message</i> uses what your preset already put there and adds nothing.</li>
+          <li><b>Split a leading thinking tag</b> — the move described above. Off
+          means the whole text is sent as an ordinary content prefill.</li>
+          <li><b>Open / close tag</b> — the markers the split looks for. The close
+          tag is optional.</li>
+          <li><b>Keep the thinking channel open</b> — a reasoning seed only means
+          something if the provider is actually reasoning. If SillyTavern has
+          reasoning switched off, the model ignores the seed or continues it as
+          ordinary reply text. This turns it back on for requests that carry a seed,
+          and only those.</li>
+          <li><b>Apply to Continue</b> — marks the reply you are extending as
+          unfinished. Usually what you want.</li>
+          <li><b>Apply to Impersonate</b> — impersonation writes as you, not as the
+          character, so a character-voiced prefill is wrong there. Off by default.</li>
+          <li><b>Apply to utility generations</b> — summaries and other extensions'
+          background calls. A story prefill welded onto a summarisation request
+          corrupts the summary. Leave this off.</li>
+          <li><b>Skip when tools are in play / on JSON schema</b> — providers reject a
+          continuation flag alongside either. Leave both on.</li>
+          <li><b>Merge guard</b> — SillyTavern's server can merge two assistant
+          messages in a row into one, and the <i>earlier</i> one survives, which
+          throws away the flag written on the later one. The guard does that merge
+          here first so the flag lands on the message that survives. Leave it on.</li>
+        </ul>
+
+        <p><b>How to check it is working.</b> Use <i>Check it works</i> below: it runs
+        your real settings through the same code the request will take and shows the
+        exact message the provider receives. Then send a message and read the
+        decision log at the bottom, which shows what actually went out. If the log
+        says <i>Applied</i> and the final message carries your flag and reasoning
+        field, it is working.</p>
+      </details>
 
       <hr>
       <label for="${UI}_profile">Field mapping</label>
@@ -306,6 +556,11 @@ function template() {
           <input id="${UI}_closeTag" class="text_pole" type="text" placeholder="&lt;/think&gt;">
         </div>
       </div>
+      <label class="checkbox_label" for="${UI}_ensureThinking">
+        <input id="${UI}_ensureThinking" type="checkbox">
+        <span>Keep the thinking channel open for seeded requests</span>
+      </label>
+      <small class="${UI}_hint">A reasoning seed is ignored when the provider is not reasoning. This switches thinking on for requests that carry a seed, and only those.</small>
 
       <hr>
       <label class="checkbox_label" for="${UI}_applyToContinue">
@@ -329,6 +584,13 @@ function template() {
       <label class="checkbox_label" for="${UI}_mergeGuard">
         <input id="${UI}_mergeGuard" type="checkbox"><span>Merge guard for server-side prompt post-processing</span>
       </label>
+
+      <hr>
+      <div class="${UI}_logbar">
+        <b>Check it works</b>
+        <div id="${UI}_selfTest" class="menu_button" title="Run a probe request through the engine">Run test</div>
+      </div>
+      <pre id="${UI}_testOut" class="${UI}_log">Tap Run test. Nothing is sent anywhere — this builds a request locally, puts it through the same code a real one takes, and shows you the result.</pre>
 
       <hr>
       <div class="${UI}_logbar">
@@ -356,7 +618,7 @@ function template() {
 }
 
 const CHECKBOXES = [
-    'enabled', 'thinkingEnabled', 'applyToContinue', 'applyToImpersonate',
+    'enabled', 'thinkingEnabled', 'ensureThinking', 'applyToContinue', 'applyToImpersonate',
     'applyToQuiet', 'skipOnTools', 'skipOnJsonSchema', 'mergeGuard', 'logToConsole',
 ];
 const TEXTS = ['flagField', 'reasoningField', 'openTag', 'closeTag', 'text', 'source'];
@@ -394,6 +656,8 @@ function bind() {
     }
 
     document.getElementById(`${UI}_reset`)?.addEventListener('click', onResetClick);
+
+    document.getElementById(`${UI}_selfTest`)?.addEventListener('click', renderSelfTest);
 
     document.getElementById(`${UI}_logClear`)?.addEventListener('click', () => {
         decisionLog.length = 0;

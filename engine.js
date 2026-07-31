@@ -8,17 +8,21 @@
  * Contract with SillyTavern (verified against staging @ 380e31e):
  *   public/scripts/openai.js  createGenerationParameters() builds `generate_data`
  *                             with `messages` being the exact array returned by
- *                             ChatCompletion.getChat().
+ *                             ChatCompletion.getChat(), and `type` set to the
+ *                             generation type.
  *   public/scripts/openai.js  sendOpenAIRequest() emits CHAT_COMPLETION_SETTINGS_READY
  *                             with that object, then JSON.stringify()s it.
  *   src/endpoints/backends/chat-completions.js  /generate applies
- *                             custom_prompt_post_processing, then copies
- *                             `request.body.messages` verbatim into the outbound body.
+ *                             custom_prompt_post_processing, then hands off to a
+ *                             per-source handler which may apply its own.
  *
- * Therefore any field written onto a message object here reaches the provider.
+ * Therefore any field written onto a message object here reaches the provider,
+ * provided it survives the server's post-processing. Predicting that survival is
+ * what most of this file is about; `st_sim.mjs` is the port of the server code
+ * those predictions are checked against.
  */
 
-export const ENGINE_VERSION = '1.3.0';
+export const ENGINE_VERSION = '1.4.0';
 
 /** Generation types SillyTavern can hand to sendOpenAIRequest. */
 export const GEN_TYPE = {
@@ -31,10 +35,26 @@ export const GEN_TYPE = {
 };
 
 /**
- * Server-side post-processing types that collapse the whole prompt into a single
+ * Server-side post-processing that collapses the whole prompt into a single
  * user message. A continuation flag is meaningless there.
  */
 export const SINGLE_POST_PROCESSING = 'single';
+
+/**
+ * Sources whose request handler runs its own prompt post-processing regardless
+ * of what the user chose in the UI. Read from
+ * src/endpoints/backends/chat-completions.js; each entry cites its handler.
+ *
+ * This exists because `custom_prompt_post_processing` is not authoritative. A
+ * merge guard keyed on that field alone believes nothing will be merged on
+ * DeepSeek when the user has post-processing off, and the tail — flag,
+ * reasoning and all — is merged away server-side.
+ */
+export const SOURCE_FORCED_POST_PROCESSING = Object.freeze({
+    deepseek: 'semi_tools',   // sendDeepSeekRequest()
+    minimax: 'merge_tools',   // sendMinimaxRequest()
+    perplexity: 'strict',     // router.post('/generate'), PERPLEXITY branch
+});
 
 export const DEFAULT_CONFIG = Object.freeze({
     enabled: false,
@@ -56,6 +76,14 @@ export const DEFAULT_CONFIG = Object.freeze({
     reasoningField: 'reasoning_content',
     openTag: '<think>',
     closeTag: '</think>',
+
+    /**
+     * Turn the provider's thinking channel on whenever a reasoning field is
+     * written. `include_reasoning` maps to thinking.type on Moonshot, DeepSeek
+     * and Z.AI and to reasoning.exclude on OpenRouter; seeding a channel the
+     * request has switched off is the one failure that looks like success.
+     */
+    ensureThinking: true,
 
     /** Which generation types are eligible. */
     applyToContinue: true,
@@ -84,6 +112,8 @@ export const REASON = {
     EMPTY_PREFILL: 'empty-prefill',
     NOTHING_TO_DO: 'nothing-to-do',
     BAD_FIELD_NAME: 'bad-field-name',
+    FIELD_COLLISION: 'field-collision',
+    MULTIMODAL_MERGE: 'multimodal-merge',
 };
 
 /**
@@ -165,18 +195,91 @@ export function isEligibleType(type, cfg) {
 }
 
 /**
+ * Every post-processing pass the server will run, in order.
+ *
+ * The `/generate` route applies the user's choice first for every source, then
+ * the per-source handler may apply another unconditionally. Both matter, so
+ * both are reported.
+ *
+ * @param {object} data generate_data
+ * @returns {string[]} Non-empty post-processing types, in application order
+ */
+export function serverPostProcessingChain(data) {
+    const chain = [];
+    const chosen = String(data?.custom_prompt_post_processing || '');
+    if (chosen) {
+        chain.push(chosen);
+    }
+    const forced = SOURCE_FORCED_POST_PROCESSING[String(data?.chat_completion_source || '')];
+    if (forced) {
+        chain.push(forced);
+    }
+    return chain;
+}
+
+/**
  * Reports whether the server will merge consecutive same-role messages for this
- * request. Any non-empty custom_prompt_post_processing value routes through
- * mergeMessages(); the empty string is the only pass-through.
- * @param {string} postProcessing custom_prompt_post_processing value
+ * request. Any post-processing pass at all routes through mergeMessages().
+ * @param {object} data generate_data
  * @returns {boolean} True if the server merges
  */
-export function serverWillMerge(postProcessing) {
-    return Boolean(postProcessing);
+export function serverWillMerge(data) {
+    return serverPostProcessingChain(data).length > 0;
+}
+
+/**
+ * Reports whether the server will collapse the prompt into one user turn.
+ * @param {object} data generate_data
+ * @returns {boolean} True if everything becomes a single user message
+ */
+export function serverWillCollapse(data) {
+    return serverPostProcessingChain(data).includes(SINGLE_POST_PROCESSING);
+}
+
+/**
+ * The content the server's mergeMessages() will see for a message, after it
+ * folds `name` into the text.
+ *
+ * The fold happens *before* the same-role squash, so a message whose content we
+ * emptied is not empty by the time the squash tests it — which is how a flag
+ * written on an emptied tail gets merged away and lost. Returns null for
+ * content the fold cannot be predicted for (multimodal arrays, which the server
+ * flattens through random tokens and rebuilds).
+ *
+ * @param {object} message Wire message
+ * @returns {string|null} Content as the server will read it, or null
+ */
+export function serverVisibleContent(message) {
+    const raw = message?.content;
+    if (raw === undefined || raw === null || raw === '') {
+        return applyNameFold(message, '');
+    }
+    if (typeof raw !== 'string') {
+        return null;
+    }
+    return applyNameFold(message, raw);
+}
+
+/**
+ * Mirrors the name fold in mergeMessages(), including its startsWith guard,
+ * which is what makes the fold idempotent when we perform it early.
+ * @param {object} message Wire message
+ * @param {string} content Current content
+ * @returns {string} Folded content
+ */
+function applyNameFold(message, content) {
+    const name = message?.name;
+    if (!name || message.role === 'system') {
+        return content;
+    }
+    return content.startsWith(`${name}: `) ? content : `${name}: ${content}`;
 }
 
 /**
  * Applies prefill semantics to a generate_data object, in place.
+ *
+ * Nothing is mutated until every reason to skip has been ruled out. A report of
+ * "skipped" must mean the request was left exactly as it arrived.
  *
  * @param {object} data SillyTavern generate_data
  * @param {object} userConfig Partial config, merged over DEFAULT_CONFIG
@@ -204,7 +307,7 @@ export function applyPrefill(data, userConfig) {
     if (cfg.skipOnTools && hasTools(data)) {
         return { applied: false, reason: REASON.TOOLS_PRESENT, detail };
     }
-    if (String(data.custom_prompt_post_processing || '') === SINGLE_POST_PROCESSING) {
+    if (serverWillCollapse(data)) {
         return { applied: false, reason: REASON.SINGLE_POST_PROCESSING, detail };
     }
 
@@ -219,36 +322,78 @@ export function applyPrefill(data, userConfig) {
             detail: { error: flag.valid ? reasoning.error : flag.error },
         };
     }
+    // Two names, one key: the flag is written after the split, so a collision
+    // replaces the seeded reasoning with `true` and reports success.
+    if (flag.name && flag.name === reasoning.name) {
+        return {
+            applied: false,
+            reason: REASON.FIELD_COLLISION,
+            detail: { error: `the flag and the reasoning field are both "${flag.name}"` },
+        };
+    }
 
     const messages = data.messages;
-    let index = messages.length - 1;
+    const tailIsAssistant = messages[messages.length - 1]?.role === 'assistant';
 
-    // Source resolution.
-    if (messages[index]?.role !== 'assistant') {
+    // ------------------------------------------------------------ decide
+
+    let willAppend = false;
+    if (!tailIsAssistant) {
         if (cfg.source !== 'extension') {
             return { applied: false, reason: REASON.NO_ASSISTANT_TAIL, detail };
         }
-        const text = String(cfg.text ?? '');
-        if (!text.trim()) {
+        if (!String(cfg.text ?? '').trim()) {
             return { applied: false, reason: REASON.EMPTY_PREFILL, detail };
         }
-        messages.push({ role: 'assistant', content: text });
-        index = messages.length - 1;
-        detail.appended = true;
+        willAppend = true;
     }
 
+    const prospectiveContent = willAppend
+        ? String(cfg.text ?? '')
+        : messages[messages.length - 1].content;
+
+    const pattern = (cfg.thinkingEnabled && reasoning.name && cfg.openTag)
+        ? buildReasoningPattern(cfg.openTag, cfg.closeTag)
+        : null;
+    const willSplit = Boolean(pattern)
+        && typeof prospectiveContent === 'string'
+        && pattern.test(prospectiveContent);
+
+    if (!flag.name && !willSplit && !willAppend) {
+        return { applied: false, reason: REASON.NOTHING_TO_DO, detail };
+    }
+
+    // A multimodal tail behind a merging server cannot be premerged: the server
+    // flattens media through random tokens and rebuilds the array, so anything
+    // written here is discarded and cannot be carried across by hand. Say so
+    // rather than report a flag that will not arrive.
+    if (cfg.mergeGuard
+        && !willAppend
+        && serverWillMerge(data)
+        && messages[messages.length - 2]?.role === 'assistant'
+        && serverVisibleContent(messages[messages.length - 1]) === null) {
+        return { applied: false, reason: REASON.MULTIMODAL_MERGE, detail };
+    }
+
+    // ------------------------------------------------------------ act
+
+    if (willAppend) {
+        messages.push({ role: 'assistant', content: String(cfg.text ?? '') });
+        detail.appended = true;
+    }
+    let index = messages.length - 1;
     let target = messages[index];
 
-    // Thinking split. Only meaningful for string content; multimodal arrays are
-    // left alone and only receive the continuation flag.
-    if (cfg.thinkingEnabled && reasoning.name && typeof target.content === 'string') {
-        const pattern = buildReasoningPattern(cfg.openTag, cfg.closeTag);
+    // Thinking split. The tag is always stripped from content when it matches;
+    // the reasoning field is only written when there is something to put in it.
+    if (willSplit) {
         const match = target.content.match(pattern);
-        if (match) {
-            target[reasoning.name] = match[1].trim();
-            target.content = target.content.replace(pattern, '').trimStart();
+        const extracted = match[1].trim();
+        target.content = target.content.replace(pattern, '').trimStart();
+        if (extracted) {
+            target[reasoning.name] = extracted;
             detail.reasoningField = reasoning.name;
-            detail.reasoningLength = target[reasoning.name].length;
+            detail.reasoningLength = extracted.length;
         }
     }
 
@@ -256,39 +401,60 @@ export function applyPrefill(data, userConfig) {
     //
     // The server merges a message into its predecessor when the roles match and
     // the message's own content is truthy — and the predecessor is the object
-    // that survives. A flag written on our message would be discarded. Rather
-    // than hoping the tail is unmergeable, perform the merge here so the
-    // server's merge becomes a no-op and the flag lands on the surviving object.
-    const previous = messages[index - 1];
-    const wouldBeMerged = cfg.mergeGuard
-        && serverWillMerge(data.custom_prompt_post_processing)
-        && previous?.role === 'assistant'
-        && typeof target.content === 'string'
-        && target.content.length > 0
-        && typeof previous.content === 'string';
-
-    if (wouldBeMerged) {
-        previous.content = `${previous.content}\n\n${target.content}`;
-        if (reasoning.name && target[reasoning.name]) {
-            const carried = target[reasoning.name];
-            previous[reasoning.name] = previous[reasoning.name]
-                ? `${previous[reasoning.name]}\n\n${carried}`
-                : carried;
+    // that survives, so a flag written on ours would be discarded. Rather than
+    // hoping the tail is unmergeable, perform the same merge here so the
+    // server's becomes a no-op and the flag lands on the surviving object.
+    //
+    // Two details make this faithful rather than approximate. The content used
+    // is the content the server will see, name already folded in, because the
+    // fold decides both truthiness and the merged text. And the whole trailing
+    // run of assistant messages is collapsed, not just one, because the server
+    // squashes runs.
+    if (cfg.mergeGuard && serverWillMerge(data)) {
+        for (;;) {
+            const previous = messages[index - 1];
+            if (previous?.role !== 'assistant') {
+                break;
+            }
+            const targetContent = serverVisibleContent(target);
+            const previousContent = serverVisibleContent(previous);
+            if (targetContent === null || previousContent === null || targetContent.length === 0) {
+                break;
+            }
+            previous.content = `${previousContent}\n\n${targetContent}`;
+            if (reasoning.name && target[reasoning.name]) {
+                const carried = target[reasoning.name];
+                previous[reasoning.name] = previous[reasoning.name]
+                    ? `${previous[reasoning.name]}\n\n${carried}`
+                    : carried;
+                detail.reasoningField = reasoning.name;
+            }
+            messages.splice(index, 1);
+            index -= 1;
+            target = previous;
+            detail.premerged = true;
         }
-        messages.splice(index, 1);
-        index -= 1;
-        target = previous;
-        detail.premerged = true;
     }
 
     // Continuation flag.
     if (flag.name) {
         target[flag.name] = true;
         detail.flagField = flag.name;
+        // With the guard off there is nothing stopping the server from merging
+        // this message into its predecessor, which discards the flag. The
+        // engine can see that coming, so it reports it rather than claiming a
+        // success the provider will never see.
+        if (!cfg.mergeGuard && serverWillMerge(data) && messages[index - 1]?.role === 'assistant') {
+            detail.mergeRisk = true;
+        }
     }
 
-    if (!flag.name && !detail.reasoningField && !detail.appended) {
-        return { applied: false, reason: REASON.NOTHING_TO_DO, detail };
+    // The reasoning channel has to be open for a reasoning seed to mean
+    // anything. `include_reasoning` is what the server maps to thinking.type on
+    // Moonshot, DeepSeek and Z.AI, and to reasoning.exclude on OpenRouter.
+    if (cfg.ensureThinking && detail.reasoningField && !data.include_reasoning) {
+        data.include_reasoning = true;
+        detail.thinkingForced = true;
     }
 
     detail.index = index;
@@ -297,7 +463,8 @@ export function applyPrefill(data, userConfig) {
 
 /**
  * Reports whether the request carries tool definitions or tool results.
- * Providers reject a continuation flag alongside tools.
+ * Providers reject a continuation flag alongside tools, and the server's own
+ * addAssistantPrefix() declines to set one for the same reason.
  * @param {object} data generate_data
  * @returns {boolean} True if tools are in play
  */
@@ -305,7 +472,7 @@ export function hasTools(data) {
     if (Array.isArray(data.tools) && data.tools.length > 0) {
         return true;
     }
-    return data.messages.some(m => m?.role === 'tool' || Array.isArray(m?.tool_calls));
+    return data.messages.some(m => m?.role === 'tool' || Boolean(m?.tool_calls));
 }
 
 /** Ready-made field mappings. Selecting one writes the fields; nothing is inferred at send time. */

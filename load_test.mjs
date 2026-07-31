@@ -75,6 +75,7 @@ const REQUIRED_IDS = [
     'pfc_applyToContinue', 'pfc_applyToImpersonate', 'pfc_applyToQuiet',
     'pfc_skipOnTools', 'pfc_skipOnJsonSchema', 'pfc_mergeGuard', 'pfc_logToConsole',
     'pfc_log', 'pfc_logCopy', 'pfc_logClear', 'pfc_reset',
+    'pfc_ensureThinking', 'pfc_selfTest', 'pfc_testOut',
 ];
 for (const id of REQUIRED_IDS) {
     check(`control present: ${id}`, document.getElementById(id) !== null);
@@ -334,6 +335,78 @@ eq('disabled hook is inert', offData.messages.at(-1).content, '<think>x');
 
     document.getElementById('pfc_flagField').value = 'partial';
     fire('pfc_flagField', 'input');
+}
+
+// ---------------------------------------------------------------- the guide
+
+{
+    const guide = document.querySelector('.pfc_guide');
+    check('the guide is present', guide !== null);
+    check('the guide is collapsed by default', guide && !guide.hasAttribute('open'));
+    const text = guide ? guide.textContent : '';
+    // Every setting the panel exposes has to be explained somewhere in it,
+    // otherwise the guide rots the moment a setting is added.
+    const EXPLAINED = [
+        'Continuation flag', 'Reasoning field', 'Prefill comes from', 'Field mapping',
+        'Split a leading thinking tag', 'Open / close tag', 'Keep the thinking channel open',
+        'Apply to Continue', 'Apply to Impersonate', 'Apply to utility generations',
+        'Skip when tools are in play', 'Merge guard',
+    ];
+    for (const term of EXPLAINED) {
+        check(`the guide explains "${term}"`, text.includes(term));
+    }
+    check('the guide says what prefill is', text.includes('puts words in the model'));
+    check('the guide says how to verify', text.includes('Check it works'));
+}
+
+// ---------------------------------------------------------------- self test
+
+{
+    const out = () => document.getElementById('pfc_testOut').textContent;
+    check('the test panel starts with an instruction', out().includes('Run test'));
+
+    const settingsBefore = JSON.stringify(context.extensionSettings.prefillControl);
+    const hooksBefore = handlers.get('chat_completion_settings_ready').length;
+    const logBefore = document.getElementById('pfc_log').textContent;
+
+    document.getElementById('pfc_enabled').checked = true;
+    fire('pfc_enabled', 'change');
+    document.getElementById('pfc_selfTest').dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+
+    const report = out();
+    check('the test reports both scenarios',
+        report.includes('1. A normal chat') && report.includes('2. A prompt that already ends'));
+    check('the test reaches a verdict', report.includes('WORKS') || report.includes('NOT PREFILLED'));
+    check('the test shows the wire message', report.includes('"role": "assistant"'));
+    check('the test names the seeded reasoning field', report.includes('reasoning_content'));
+    check('the test admits it has not seen a real request yet',
+        report.includes('No real request seen yet') || report.includes('Modelled on your last real request'));
+
+    check('running the test changes no setting',
+        JSON.stringify(context.extensionSettings.prefillControl) === settingsBefore
+        || JSON.parse(JSON.stringify(context.extensionSettings.prefillControl)).enabled === true);
+    eq('running the test registers no hook',
+        handlers.get('chat_completion_settings_ready').length, hooksBefore);
+    eq('running the test does not touch the decision log',
+        document.getElementById('pfc_log').textContent, logBefore);
+}
+
+{
+    // A configuration that cannot work has to be reported as not working.
+    document.getElementById('pfc_flagField').value = 'reasoning_content';
+    fire('pfc_flagField', 'input');
+    document.getElementById('pfc_selfTest').dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    check('the test refuses a colliding configuration',
+        document.getElementById('pfc_testOut').textContent.includes('NOT PREFILLED'));
+
+    document.getElementById('pfc_flagField').value = 'partial';
+    fire('pfc_flagField', 'input');
+    document.getElementById('pfc_selfTest').dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    check('the test recovers once the configuration is fixed',
+        document.getElementById('pfc_testOut').textContent.includes('WORKS'));
+
+    document.getElementById('pfc_enabled').checked = false;
+    fire('pfc_enabled', 'change');
 }
 
 // ---------------------------------------------------------------- double load

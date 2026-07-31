@@ -14,6 +14,8 @@ import {
     hasTools,
     isEligibleType,
     serverWillMerge,
+    serverWillCollapse,
+    serverPostProcessingChain,
     DEFAULT_CONFIG,
     ENGINE_VERSION,
     PROFILES,
@@ -66,10 +68,24 @@ check('pattern rejects mid-string tag', 'text <think>hi</think>'.match(buildReas
 check('pattern spans newlines', '<think>a\nb</think>'.match(buildReasoningPattern('<think>', '</think>'))[1] === 'a\nb');
 check('pattern with regex-hostile tag', '[[t]]x'.match(buildReasoningPattern('[[t]]', ''))[1] === 'x');
 
-check('serverWillMerge false on empty', serverWillMerge('') === false);
-check('serverWillMerge true on merge', serverWillMerge('merge') === true);
-check('serverWillMerge true on semi', serverWillMerge('semi') === true);
-check('serverWillMerge true on strict', serverWillMerge('strict') === true);
+check('serverWillMerge false on empty', serverWillMerge({ custom_prompt_post_processing: '' }) === false);
+check('serverWillMerge true on merge', serverWillMerge({ custom_prompt_post_processing: 'merge' }) === true);
+check('serverWillMerge true on semi', serverWillMerge({ custom_prompt_post_processing: 'semi' }) === true);
+check('serverWillMerge true on strict', serverWillMerge({ custom_prompt_post_processing: 'strict' }) === true);
+check('serverWillMerge true on a source that forces its own',
+    serverWillMerge({ custom_prompt_post_processing: '', chat_completion_source: 'deepseek' }) === true);
+check('serverWillMerge false on a source that does not',
+    serverWillMerge({ custom_prompt_post_processing: '', chat_completion_source: 'custom' }) === false);
+eq('post-processing chain is user choice then source-forced',
+    serverPostProcessingChain({ custom_prompt_post_processing: 'merge', chat_completion_source: 'deepseek' }),
+    ['merge', 'semi_tools']);
+eq('post-processing chain is empty when nothing applies',
+    serverPostProcessingChain({ custom_prompt_post_processing: '', chat_completion_source: 'custom' }), []);
+eq('post-processing chain carries a forced pass with no user choice',
+    serverPostProcessingChain({ custom_prompt_post_processing: '', chat_completion_source: 'perplexity' }), ['strict']);
+check('serverWillCollapse only on single',
+    serverWillCollapse({ custom_prompt_post_processing: 'single' }) === true
+    && serverWillCollapse({ custom_prompt_post_processing: 'merge' }) === false);
 
 check('type normal eligible', isEligibleType('normal', ON) === true);
 check('type undefined eligible', isEligibleType(undefined, ON) === true);
@@ -281,7 +297,8 @@ eq('empty prefill text in extension mode', applyPrefill(
     data.messages.push({ role: 'assistant', content: '<think>x' });
     const keysBefore = Object.keys(data).sort().join(',');
     applyPrefill(data, ON);
-    eq('generate_data top level keys unchanged', Object.keys(data).sort().join(','), keysBefore);
+    const added = Object.keys(data).filter(k => !keysBefore.split(',').includes(k));
+    eq('engine adds no top-level key other than include_reasoning', added, ['include_reasoning']);
 }
 
 // ---------------------------------------------------------------- idempotence
