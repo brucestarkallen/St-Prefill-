@@ -22,7 +22,7 @@
  * those predictions are checked against.
  */
 
-export const ENGINE_VERSION = '1.4.0';
+export const ENGINE_VERSION = '1.5.0';
 
 /** Generation types SillyTavern can hand to sendOpenAIRequest. */
 export const GEN_TYPE = {
@@ -261,6 +261,46 @@ export function serverVisibleContent(message) {
 }
 
 /**
+ * Reports whether the server will merge `messages[index]` into the message
+ * before it, discarding that object whole.
+ *
+ * This is one question, asked about the message, not about any field on it.
+ * `mergeMessages()` keeps the *predecessor* and drops the merged object
+ * entirely, so the continuation flag and the reasoning seed share a single
+ * fate — asking separately about each invites a report where one is covered and
+ * the other silently disappears.
+ *
+ * Unpredictable content counts as at risk, not as safe. The server flattens a
+ * multimodal message to text before it squashes, so such a message does merge;
+ * the premerge cannot reproduce that flattening and stands down, which leaves
+ * the merge to the server. A warning that turns out to be unnecessary costs a
+ * line in the panel. The opposite error costs the whole prefill, silently.
+ *
+ * @param {object} data generate_data
+ * @param {object[]} messages Message array, as it now stands
+ * @param {number} index Index of the message everything was written on
+ * @returns {boolean} True if the server will discard that message
+ */
+export function targetWillBeMergedAway(data, messages, index) {
+    if (!serverWillMerge(data)) {
+        return false;
+    }
+    const target = messages[index];
+    const previous = messages[index - 1];
+    if (target?.role !== 'assistant' || previous?.role !== 'assistant') {
+        return false;
+    }
+    const targetContent = serverVisibleContent(target);
+    const previousContent = serverVisibleContent(previous);
+    if (targetContent === null || previousContent === null) {
+        return true;
+    }
+    // The squash tests the merged message's own content for truthiness, so an
+    // empty one is pushed as its own object and survives.
+    return targetContent.length > 0;
+}
+
+/**
  * Mirrors the name fold in mergeMessages(), including its startsWith guard,
  * which is what makes the fold idempotent when we perform it early.
  * @param {object} message Wire message
@@ -440,19 +480,32 @@ export function applyPrefill(data, userConfig) {
     if (flag.name) {
         target[flag.name] = true;
         detail.flagField = flag.name;
-        // With the guard off there is nothing stopping the server from merging
-        // this message into its predecessor, which discards the flag. The
-        // engine can see that coming, so it reports it rather than claiming a
-        // success the provider will never see.
-        if (!cfg.mergeGuard && serverWillMerge(data) && messages[index - 1]?.role === 'assistant') {
-            detail.mergeRisk = true;
-        }
+    }
+
+    // Everything above was written on `target`. If the server merges that
+    // object into its predecessor, the predecessor survives and all of it is
+    // discarded together — so the question is asked once, about the message.
+    //
+    // With the guard on, the loop above has already collapsed the run and this
+    // is false. It is not always false: the premerge stands down when it cannot
+    // reproduce the server's transform, and a multimodal predecessor is exactly
+    // that case. The server flattens the media and merges regardless.
+    //
+    // Reporting a known failure is the point. Silence here is a panel that says
+    // "Applied" about a request the provider will never see the prefill in.
+    if (targetWillBeMergedAway(data, messages, index)) {
+        detail.mergeRisk = true;
     }
 
     // The reasoning channel has to be open for a reasoning seed to mean
     // anything. `include_reasoning` is what the server maps to thinking.type on
     // Moonshot, DeepSeek and Z.AI, and to reasoning.exclude on OpenRouter.
-    if (cfg.ensureThinking && detail.reasoningField && !data.include_reasoning) {
+    //
+    // The rule is "open it for requests that carry a seed". A request whose seed
+    // the server is about to merge away does not carry one, so flipping a
+    // provider-visible parameter there changes behaviour for no benefit and
+    // without the user being able to see why.
+    if (cfg.ensureThinking && detail.reasoningField && !detail.mergeRisk && !data.include_reasoning) {
         data.include_reasoning = true;
         detail.thinkingForced = true;
     }

@@ -158,13 +158,15 @@ for (let i = 0; i < RUNS; i++) {
         }
     }
 
-    // Wire pass: does what the engine wrote survive the server? Multimodal
-    // content is excluded because the server rebuilds it through random tokens.
-    // With the merge guard off, a same-role tail being merged away is the
-    // documented consequence of turning it off, and the engine says so via
-    // detail.mergeRisk rather than pretending otherwise.
-    const textOnly = data.messages.every(m => typeof m.content === 'string' || m.content === undefined || m.content === null);
-    if (report.applied && textOnly && !report.detail.mergeRisk) {
+    // Wire pass: does what the engine wrote survive the server?
+    //
+    // Multimodal content used to be excluded here on the grounds that the server
+    // rebuilds it through random tokens. That exclusion hid a real failure: a
+    // message carrying media is flattened to text and merged like any other, so
+    // "the engine cannot model it" was never the same statement as "nothing was
+    // lost". detail.mergeRisk now covers that case, so the exclusion is gone and
+    // every applied run the engine did not flag is asserted on the wire.
+    if (report.applied && !report.detail.mergeRisk) {
         let wire;
         try {
             wire = deliver(data);

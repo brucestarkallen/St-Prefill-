@@ -337,6 +337,79 @@ eq('disabled hook is inert', offData.messages.at(-1).content, '<think>x');
     fire('pfc_flagField', 'input');
 }
 
+// ---------------------------------------------------------------- reason coverage
+
+{
+    // Reason codes are shown in the status line. A code with no entry reaches
+    // the user as raw jargon ("field-collision"), so the map is proved to cover
+    // the enum rather than kept in step by hand.
+    const { REASON } = await import('./engine.js');
+    for (const [key, code] of Object.entries(REASON)) {
+        check(`status text exists for REASON.${key}`,
+            typeof mod.STATUS_TEXT[code] === 'string' && mod.STATUS_TEXT[code].length > 0);
+    }
+    eq('status map has no entry without a reason code',
+        Object.keys(mod.STATUS_TEXT).filter(k => !Object.values(REASON).includes(k)), []);
+}
+
+// ---------------------------------------------------------------- merge risk reaches the panel
+
+{
+    // The engine predicts that the server will discard the message it wrote on.
+    // A panel that shows "Applied" over that prediction is the failure this
+    // whole mechanism exists to prevent, so the rendering is gated, not assumed.
+    const store = context.extensionSettings.prefillControl;
+    const before = JSON.stringify(store);
+    Object.assign(store, {
+        enabled: true, source: 'preset', mergeGuard: false,
+        flagField: 'partial', reasoningField: 'reasoning_content',
+        openTag: '<think>', closeTag: '</think>', thinkingEnabled: true,
+        applyToContinue: true, skipOnTools: true, skipOnJsonSchema: true,
+    });
+
+    const hook = handlers.get('chat_completion_settings_ready')[0];
+    hook({
+        type: 'normal',
+        chat_completion_source: 'custom',
+        custom_prompt_post_processing: 'merge',
+        include_reasoning: true,
+        messages: [
+            { role: 'system', content: 'You are narrating.' },
+            { role: 'user', content: 'Go on.' },
+            { role: 'assistant', content: 'He waited by the gate.' },
+            { role: 'assistant', content: '<think>Seed.</think>He stepped through.' },
+        ],
+    });
+
+    const status = document.getElementById('pfc_status');
+    check('a known-doomed prefill is not reported as applied',
+        !status.textContent.startsWith('Applied to the last request'));
+    check('the status line says the server will merge it away',
+        status.textContent.includes('merge it into the previous assistant message'));
+    check('the status line names the remedy', status.textContent.includes('turn the merge guard on'));
+    check('the success styling is withheld', !status.classList.contains('pfc_ok'));
+    check('the risk styling is applied', status.classList.contains('pfc_risk'));
+
+    // ...and the same request with the guard on is a clean success again.
+    store.mergeGuard = true;
+    hook({
+        type: 'normal',
+        chat_completion_source: 'custom',
+        custom_prompt_post_processing: 'merge',
+        include_reasoning: true,
+        messages: [
+            { role: 'system', content: 'You are narrating.' },
+            { role: 'user', content: 'Go on.' },
+            { role: 'assistant', content: 'He waited by the gate.' },
+            { role: 'assistant', content: '<think>Seed.</think>He stepped through.' },
+        ],
+    });
+    check('the merge guard restores a clean success', status.classList.contains('pfc_ok'));
+    check('no risk styling once the guard has folded the run', !status.classList.contains('pfc_risk'));
+
+    Object.assign(store, JSON.parse(before));
+}
+
 // ---------------------------------------------------------------- the guide
 
 {

@@ -5,11 +5,11 @@ Working notes for anyone — human or model — changing this repository.
 ## Run the gate before every push
 
 ```bash
-node test.mjs           # engine logic          → 137 checks
+node test.mjs           # engine logic          → 159 checks
 node wire_test.mjs      # engine → server port  → 1907 checks, 560 combinations
-node load_test.mjs      # module + DOM + wiring → 130 checks
+node load_test.mjs      # module + DOM + wiring → 152 checks
 node fuzz_test.mjs      # 60000 seeded runs over wire invariants
-node negative_test.mjs  # 58 mutations, 4 control runs
+node negative_test.mjs  # 66 mutations, 4 control runs
 npx eslint engine.js index.js st_sim.mjs
 ```
 
@@ -52,6 +52,17 @@ can reach it without a DOM.
 assembled `generate_data` one statement before `JSON.stringify()`. Earlier hooks
 sit before fields that matter are populated; there is no later one.
 
+**The port is checked against the real thing, not eyeballed.** `st_sim.mjs` was
+verified by running it and `src/prompt-converters.js` side by side over 40000
+randomised inputs across all nine post-processing types, asserting byte-identical
+output; and the engine was run end to end through the real server code over
+260000 randomised requests. That is how the placeholder bug was found: the sim
+used `Let's get started.`, the code fallback, while `default/config.yaml` ships
+`promptPlaceholder: "[Start a new chat]"` and `addMissingConfigValues()` writes
+it into every install. Re-run both after any change here. Both harnesses need a
+SillyTavern checkout, so they are not in this repo — rebuild them rather than
+trusting that the port still matches.
+
 **`st_sim.mjs` is a port, not a model.** Every guard in the engine is a
 prediction about SillyTavern's server, and a wrong prediction reports success
 while the flag is merged away. The simulator is how those predictions are
@@ -81,6 +92,34 @@ fuzz gate asserts that byte for byte. Decide first, mutate second.
 off, a flag on a mergeable tail will not arrive; the engine knows that and sets
 `detail.mergeRisk` rather than reporting a clean success. Silent known-failure
 is the one outcome worse than a skip.
+
+**Merge risk belongs to the message, not to a field on it.** `mergeMessages()`
+keeps the *predecessor* and discards the merged object whole, so the
+continuation flag and the reasoning seed are lost together or not at all.
+`targetWillBeMergedAway()` is the single predicate and it is asked once, after
+the target is final. Asking it per field is how a version shipped that covered
+the flag while the reasoning seed disappeared in silence — and, with no flag
+configured, covered nothing at all.
+
+**The guard being on is not the same as there being no risk.** The premerge
+stands down whenever it cannot reproduce the server's transform, and a
+predecessor carrying media is exactly that: the server flattens it to text and
+merges anyway. `targetWillBeMergedAway()` therefore treats content it cannot
+predict as at risk rather than as safe. A warning that turns out to be
+unnecessary costs one line in the panel; the opposite error costs the whole
+prefill, silently. Measured over 260000 runs against the real server code, the
+conservative call was unnecessary about once in five thousand.
+
+**A seed that will not arrive is not a seed.** `ensureThinking` opens the
+provider's thinking channel for requests carrying a seed. A request whose seed
+the server is about to merge away carries none, so the channel is left alone —
+flipping a provider-visible parameter there changes behaviour for no benefit and
+with no way for the user to see why.
+
+**Every reason code carries display text.** `STATUS_TEXT` is asserted against
+`Object.values(REASON)` in the load gate, in both directions. A missing entry
+falls through to the raw code and reaches the user as jargon like
+`field-collision`.
 
 **A seeded channel has to be open.** `include_reasoning` maps to `thinking.type`
 on Moonshot, DeepSeek and Z.AI and to `reasoning.exclude` on OpenRouter. It is

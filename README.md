@@ -123,7 +123,9 @@ Extensions calling `ConnectionManagerRequestService.sendRequest` use a separate 
 
 SillyTavern's server-side prompt post-processing merges consecutive same-role messages, and the **earlier** object is the one that survives. A continuation flag written on a later assistant message would be silently discarded whenever the prompt tail happens to be two assistant turns.
 
-With the guard on, the merge is performed here first, so the flag lands on the surviving object and the server's merge becomes a no-op. Turn it off only if you have a reason to want two assistant messages on the wire — with it off, the panel will tell you the flag is not going to arrive rather than reporting a clean success.
+With the guard on, the merge is performed here first, so the flag lands on the surviving object and the server's merge becomes a no-op. Turn it off only if you have a reason to want two assistant messages on the wire — with it off, the panel will tell you the prefill is not going to arrive rather than reporting a clean success.
+
+The guard stands down when it cannot reproduce what the server does, and one case reaches that: a previous message carrying an image or audio. The server flattens media to text before it merges, through placeholder tokens it generates itself, so nothing written here can be carried across by hand. The panel reports that too — it is the one merge risk that exists with the guard switched on.
 
 Whether the server merges is **not** the same question as which post-processing you selected. `sendDeepSeekRequest()`, `sendMinimaxRequest()` and the Perplexity branch each run their own post-processing regardless of that setting, so the guard reads the source as well as the setting.
 
@@ -172,9 +174,52 @@ npx eslint engine.js index.js st_sim.mjs
 
 `negative_test.mjs` runs an unmutated control tree through every gate first. If a control run does not exit 0, the harness fails rather than reporting mutations as caught.
 
+The gates above check the engine against `st_sim.mjs`. `st_sim.mjs` itself is checked against SillyTavern's own `src/prompt-converters.js`, run side by side over randomised inputs until the outputs match byte for byte, and the engine is run end to end through that real server code. Those two harnesses need a SillyTavern checkout, so they do not live here — but a change to `st_sim.mjs` that has not been through them is a guess.
+
 ---
 
 ## Changelog
+
+### 1.5.0
+
+Audit release. The port this extension's predictions are checked against was
+itself checked — against SillyTavern's own source, run side by side over 40000
+randomised inputs — and the engine was run end to end through the real server
+code over 260000 randomised requests. Four defects, two of them silent.
+
+- **A prefill the server was about to discard could be reported as a clean
+  success.** SillyTavern's merge keeps the *earlier* message and drops the later
+  one whole, so the continuation flag and the reasoning seed are lost together.
+  The engine asked whether the flag would survive as part of writing the flag —
+  which meant that with no flag configured, nothing was asked at all, and the
+  reasoning seed disappeared with the panel reporting *Applied*. That is the
+  default shape on OpenRouter's generic mapping and on custom endpoints, where
+  the flag field is empty. The question is now asked once, about the message.
+- **The merge guard being on did not mean there was no risk.** The guard stands
+  down whenever it cannot reproduce the server's transform, and a previous
+  message carrying an image or audio is exactly that case — the server flattens
+  the media to text and merges anyway. Flag and seed were both discarded with
+  nothing reported. Content the guard cannot predict now counts as at risk.
+- **The settings panel never showed the prediction.** The engine has reported
+  merge risk since 1.4.0 and the status line did not render it, so the one
+  outcome the mechanism exists to prevent — *Applied* over a request the
+  provider will never see the prefill in — reached the user anyway. The status
+  line now says so, withholds the success colour, and names the right remedy,
+  which is not the same one depending on whether the guard is already on.
+- **A seed that will not arrive no longer switches the thinking channel on.**
+  Opening it changed a provider-visible parameter with nothing to show for it.
+- **The server simulator used the wrong prompt placeholder.** It carried
+  `Let's get started.`, the fallback in SillyTavern's code, while
+  `default/config.yaml` ships `promptPlaceholder: "[Start a new chat]"` and the
+  server writes that into every install. Found by running the simulator against
+  the real `prompt-converters.js`; it was the only difference in 40000 runs.
+- **Two reason codes had no display text** and reached the settings panel as raw
+  jargon. The gate now proves the map covers the enum in both directions.
+- **The fuzz gate excluded multimodal requests from its wire pass**, which is
+  what let the second defect above survive it. The exclusion is gone.
+- 159 engine checks, 1907 wire checks over 560 provider/post-processing
+  combinations, 152 load checks, 60000 fuzz runs, 66 proven mutations, 4 control
+  runs.
 
 ### 1.4.0
 

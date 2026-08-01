@@ -15,6 +15,7 @@ import {
     isEligibleType,
     serverWillMerge,
     serverWillCollapse,
+    targetWillBeMergedAway,
     serverPostProcessingChain,
     DEFAULT_CONFIG,
     ENGINE_VERSION,
@@ -280,6 +281,125 @@ eq('empty prefill text in extension mode', applyPrefill(
     const report = applyPrefill(data, ON);
     eq('merge guard ignores non-assistant predecessor', report.detail.premerged, undefined);
     eq('merge guard leaves user turn alone', data.messages.length, 4);
+}
+
+// ---------------------------------------------------------------- merge risk is a property of the message
+
+{
+    // The flag and the reasoning seed live on the same object and are discarded
+    // together. Risk is therefore reported for the message, not for whichever
+    // field happened to be configured.
+    const base = () => {
+        const data = makeData({ custom_prompt_post_processing: 'merge' });
+        data.messages.push({ role: 'assistant', content: 'Earlier assistant turn.' });
+        data.messages.push({ role: 'assistant', content: '<think>Seed.</think>Leftover text.' });
+        return data;
+    };
+
+    const withFlag = applyPrefill(base(), { ...ON, mergeGuard: false });
+    eq('risk reported with a flag configured', withFlag.detail.mergeRisk, true);
+
+    const noFlag = applyPrefill(base(), { ...ON, mergeGuard: false, flagField: '' });
+    eq('risk reported with no flag configured', noFlag.detail.mergeRisk, true);
+    eq('the seed at risk is still named', noFlag.detail.reasoningField, 'reasoning_content');
+
+    const guarded = applyPrefill(base(), ON);
+    eq('the guard removes the risk', guarded.detail.mergeRisk, undefined);
+    eq('the guard folded the run', guarded.detail.premerged, true);
+}
+
+{
+    // An emptied tail is not merged by the server, because the squash tests the
+    // message's own content for truthiness. That is not a risk and must not be
+    // reported as one.
+    const data = makeData({ custom_prompt_post_processing: 'merge' });
+    data.messages.push({ role: 'assistant', content: 'Earlier assistant turn.' });
+    data.messages.push({ role: 'assistant', content: '<think>Seeded thought.' });
+    const report = applyPrefill(data, { ...ON, mergeGuard: false });
+    eq('an emptied tail is not reported at risk', report.detail.mergeRisk, undefined);
+}
+
+{
+    // ...but the name fold makes it non-empty again, so it is.
+    const data = makeData({ custom_prompt_post_processing: 'merge', char_name: 'Nyx' });
+    data.messages.push({ role: 'assistant', content: 'Earlier assistant turn.' });
+    data.messages.push({ role: 'assistant', content: '<think>Seeded thought.', name: 'Nyx' });
+    const report = applyPrefill(data, { ...ON, mergeGuard: false });
+    eq('a folded name makes an emptied tail mergeable', report.detail.mergeRisk, true);
+}
+
+{
+    // The guard cannot reproduce the server's media flattening, so it stands
+    // down — and the server merges anyway. That is the one risk that exists
+    // with the guard switched on, and it has to be reported.
+    const data = makeData({ custom_prompt_post_processing: 'merge' });
+    data.messages.push({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'He waited.' }, { type: 'image_url', image_url: { url: 'data:x;base64,AAA' } }],
+    });
+    data.messages.push({ role: 'assistant', content: '<think>Seed.</think>He stepped through.' });
+    const report = applyPrefill(data, ON);
+    eq('a multimodal predecessor defeats the guard', report.detail.premerged, undefined);
+    eq('and that is reported as a risk', report.detail.mergeRisk, true);
+}
+
+{
+    // No post-processing anywhere: nothing merges, nothing is at risk.
+    const data = makeData({ custom_prompt_post_processing: '' });
+    data.messages.push({ role: 'assistant', content: 'Earlier assistant turn.' });
+    data.messages.push({ role: 'assistant', content: '<think>Seed.</think>Leftover.' });
+    const report = applyPrefill(data, { ...ON, mergeGuard: false });
+    eq('no merging server, no risk', report.detail.mergeRisk, undefined);
+}
+
+{
+    // A source that post-processes on its own is a merging server even when the
+    // user selected None.
+    const data = makeData({ custom_prompt_post_processing: '', chat_completion_source: 'deepseek' });
+    data.messages.push({ role: 'assistant', content: 'Earlier assistant turn.' });
+    data.messages.push({ role: 'assistant', content: '<think>Seed.</think>Leftover.' });
+    const report = applyPrefill(data, { ...ON, mergeGuard: false, flagField: 'prefix' });
+    eq('forced post-processing counts as merging', report.detail.mergeRisk, true);
+}
+
+{
+    // A seed that will not arrive is not a seed. Opening the provider's
+    // thinking channel for it changes behaviour with nothing to show for it.
+    const data = makeData({ custom_prompt_post_processing: 'merge' });
+    data.include_reasoning = false;
+    data.messages.push({ role: 'assistant', content: 'Earlier assistant turn.' });
+    data.messages.push({ role: 'assistant', content: '<think>Seed.</think>Leftover text.' });
+    const report = applyPrefill(data, { ...ON, mergeGuard: false });
+    eq('a doomed seed is reported at risk', report.detail.mergeRisk, true);
+    eq('a doomed seed does not open the thinking channel', data.include_reasoning, false);
+    eq('and does not claim it did', report.detail.thinkingForced, undefined);
+}
+
+{
+    // The same request with the guard on does open it, because the seed arrives.
+    const data = makeData({ custom_prompt_post_processing: 'merge' });
+    data.include_reasoning = false;
+    data.messages.push({ role: 'assistant', content: 'Earlier assistant turn.' });
+    data.messages.push({ role: 'assistant', content: '<think>Seed.</think>Leftover text.' });
+    applyPrefill(data, ON);
+    eq('a surviving seed opens the thinking channel', data.include_reasoning, true);
+}
+
+{
+    // targetWillBeMergedAway is the single predicate. Exercise it directly.
+    const merging = { custom_prompt_post_processing: 'merge' };
+    const run = [{ role: 'assistant', content: 'a' }, { role: 'assistant', content: 'b' }];
+    eq('predicate: mergeable run', targetWillBeMergedAway(merging, run, 1), true);
+    eq('predicate: index 0 has no predecessor', targetWillBeMergedAway(merging, run, 0), false);
+    eq('predicate: non-merging server',
+        targetWillBeMergedAway({ custom_prompt_post_processing: '' }, run, 1), false);
+    eq('predicate: user predecessor',
+        targetWillBeMergedAway(merging, [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }], 1), false);
+    eq('predicate: empty target survives',
+        targetWillBeMergedAway(merging, [{ role: 'assistant', content: 'a' }, { role: 'assistant', content: '' }], 1), false);
+    eq('predicate: unpredictable content counts as at risk',
+        targetWillBeMergedAway(merging, [{ role: 'assistant', content: [{ type: 'text', text: 'a' }] }, { role: 'assistant', content: 'b' }], 1), true);
+    eq('predicate: missing message is not a risk', targetWillBeMergedAway(merging, run, 9), false);
 }
 
 // ---------------------------------------------------------------- non-mutation of unrelated turns

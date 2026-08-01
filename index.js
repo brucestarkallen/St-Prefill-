@@ -13,7 +13,7 @@ import { applyPrefill, DEFAULT_CONFIG, PROFILES, REASON } from './engine.js';
 import { deliver } from './st_sim.mjs';
 
 const MODULE = 'prefillControl';
-const EXTENSION_VERSION = '1.4.0';
+const EXTENSION_VERSION = '1.5.0';
 const UI = 'pfc';
 
 /** @returns {object} SillyTavern context */
@@ -236,6 +236,11 @@ function onSettingsReady(generateData) {
 
 // ---------------------------------------------------------------- UI
 
+/**
+ * Every reason code carries display text. A missing entry falls back to the raw
+ * code, which reaches the user as jargon like "field-collision"; the load gate
+ * asserts this map covers REASON so a new code cannot ship without one.
+ */
 const STATUS_TEXT = {
     [REASON.APPLIED]: 'Applied to the last request.',
     [REASON.DISABLED]: 'Off.',
@@ -249,22 +254,43 @@ const STATUS_TEXT = {
     [REASON.EMPTY_PREFILL]: 'Skipped: prefill text is empty.',
     [REASON.NOTHING_TO_DO]: 'Skipped: both the flag field and thinking split are off.',
     [REASON.BAD_FIELD_NAME]: 'Skipped: unusable field name.',
+    [REASON.FIELD_COLLISION]: 'Skipped: the flag and the reasoning field have the same name.',
+    [REASON.MULTIMODAL_MERGE]: 'Skipped: the last message carries media and the server would merge it away.',
 };
+
+/**
+ * Replaces the reason text when the engine has predicted that the server will
+ * discard the message it wrote on. The reason really is "applied" — the engine
+ * did its part — so the reason map is the wrong place for this.
+ */
+const MERGE_RISK_TEXT = 'Applied, but the server will merge it into the previous assistant message and the provider will not see it.';
 
 function renderStatus() {
     const el = document.getElementById(`${UI}_status`);
     if (!el || !lastReport) {
         return;
     }
-    const text = STATUS_TEXT[lastReport.reason] || lastReport.reason;
+    // A known failure is not a success. The engine sets mergeRisk when the
+    // server is going to discard the message everything was written on; showing
+    // "Applied" over that is the one report worse than reporting a skip.
+    const atRisk = Boolean(lastReport.applied && lastReport.detail?.mergeRisk);
+    const text = atRisk
+        ? MERGE_RISK_TEXT
+        : (STATUS_TEXT[lastReport.reason] || lastReport.reason);
     const bits = [];
     if (lastReport.detail?.flagField) bits.push(`${lastReport.detail.flagField}: true`);
     if (lastReport.detail?.reasoningField) bits.push(`${lastReport.detail.reasoningField} (${lastReport.detail.reasoningLength} chars)`);
     if (lastReport.detail?.premerged) bits.push('merged into previous assistant turn');
     if (lastReport.detail?.appended) bits.push('prefill appended by extension');
     if (lastReport.detail?.error) bits.push(lastReport.detail.error);
+    if (atRisk) {
+        bits.push(settings().mergeGuard
+            ? 'the merge guard cannot fold a message carrying media'
+            : 'turn the merge guard on');
+    }
     el.textContent = bits.length ? `${text} — ${bits.join(', ')}` : text;
-    el.classList.toggle(`${UI}_ok`, lastReport.applied);
+    el.classList.toggle(`${UI}_ok`, lastReport.applied && !atRisk);
+    el.classList.toggle(`${UI}_risk`, atRisk);
 }
 
 function renderLog() {
@@ -355,7 +381,15 @@ function runProbe(title, withAssistantTail) {
     if (lost.length) {
         lines.push(`  PREFILLED, BUT ${lost.join(' and ')} WILL NOT ARRIVE.`);
         lines.push('  SillyTavern\u2019s server merges it into the message before it.');
-        lines.push('  Turn the merge guard on.');
+        // With the guard already on, "turn it on" is not advice, it is noise.
+        // The guard stands down when it cannot reproduce the server's transform,
+        // and a previous message carrying media is that case.
+        lines.push(settings().mergeGuard
+            ? '  The merge guard is already on. It stands down when the message before'
+              + '\n  yours carries an image or audio, because the server rebuilds those and'
+              + '\n  anything written here is discarded. Remove the media from that turn,'
+              + '\n  or set post-processing to None.'
+            : '  Turn the merge guard on.');
     } else {
         lines.push(`  WORKS \u2014 ${arrived.join(', ')}.`);
     }
@@ -501,8 +535,12 @@ function template() {
           continuation flag alongside either. Leave both on.</li>
           <li><b>Merge guard</b> — SillyTavern's server can merge two assistant
           messages in a row into one, and the <i>earlier</i> one survives, which
-          throws away the flag written on the later one. The guard does that merge
-          here first so the flag lands on the message that survives. Leave it on.</li>
+          throws away everything written on the later one — the flag and the
+          reasoning seed together. The guard does that merge here first so both
+          land on the message that survives. Leave it on. It cannot help in one
+          case: if the message before yours carries an image or audio, the server
+          rebuilds it in a way nothing here can reproduce and merges anyway. The
+          status line says so when it happens.</li>
         </ul>
 
         <p><b>How to check it is working.</b> Use <i>Check it works</i> below: it runs
@@ -765,4 +803,4 @@ async function start() {
 
 const ready = start();
 
-export { applyPrefill, EXTENSION_VERSION, MODULE, ready };
+export { applyPrefill, EXTENSION_VERSION, MODULE, ready, STATUS_TEXT };

@@ -19,7 +19,18 @@
  * fiction.
  */
 
-const PROMPT_PLACEHOLDER = 'Let\'s get started.';
+/**
+ * The server reads this from config: `getConfigValue('promptPlaceholder', ...)`.
+ * Its code fallback is "Let's get started.", but `default/config.yaml` ships
+ * `promptPlaceholder: "[Start a new chat]"` and `addMissingConfigValues()` writes
+ * that file into every new install and back-fills the key into existing ones — so
+ * the fallback is a value almost nobody runs, and this is the one they do.
+ *
+ * It is config-driven, so an install can change it. Nothing here may depend on
+ * the text: it appears only where the prompt merged down to nothing, or as the
+ * leading user turn `strict + placeholders` inserts, and no guard reads either.
+ */
+const PROMPT_PLACEHOLDER = '[Start a new chat]';
 
 export const PROMPT_PROCESSING_TYPE = {
     NONE: '',
@@ -33,7 +44,6 @@ export const PROMPT_PROCESSING_TYPE = {
     SINGLE: 'single',
 };
 
-/**
 /**
  * Stands in for the server's crypto.randomBytes() placeholder token. Only
  * opacity and uniqueness matter; this file is also loaded in the browser by the
