@@ -42,6 +42,7 @@ Bump on every push. Add a `README.md` changelog entry in the same commit.
 | `wire_test.mjs` | Engine output through `st_sim.mjs`. Asserts what the provider receives. |
 | `fuzz_test.mjs` | Seeded fuzz over engine invariants, including a wire pass. |
 | `negative_test.mjs` | Mutation harness. |
+| `parity_test.mjs` | `st_sim.mjs` and `engine.js` against a real SillyTavern checkout. |
 
 Keep the split. Anything decision-shaped belongs in `engine.js` where the gate
 can reach it without a DOM.
@@ -52,16 +53,33 @@ can reach it without a DOM.
 assembled `generate_data` one statement before `JSON.stringify()`. Earlier hooks
 sit before fields that matter are populated; there is no later one.
 
-**The port is checked against the real thing, not eyeballed.** `st_sim.mjs` was
-verified by running it and `src/prompt-converters.js` side by side over 40000
-randomised inputs across all nine post-processing types, asserting byte-identical
-output; and the engine was run end to end through the real server code over
-260000 randomised requests. That is how the placeholder bug was found: the sim
-used `Let's get started.`, the code fallback, while `default/config.yaml` ships
-`promptPlaceholder: "[Start a new chat]"` and `addMissingConfigValues()` writes
-it into every install. Re-run both after any change here. Both harnesses need a
-SillyTavern checkout, so they are not in this repo — rebuild them rather than
-trusting that the port still matches.
+**The port is checked against the real thing, not eyeballed.** `parity_test.mjs`
+runs `st_sim.mjs` and SillyTavern's own `src/prompt-converters.js` side by side
+over randomised inputs across every post-processing type, asserting
+byte-identical output, then runs `engine.js` end to end through that real server
+code. It needs a checkout, so it is not in `npm run gate`:
+
+```bash
+git clone --depth 1 -b staging https://github.com/SillyTavern/SillyTavern.git /tmp/st
+cd /tmp/st && npm install yaml --no-save
+cd - && ST=/tmp/st npm run parity
+```
+
+Without `ST` it prints SKIP and exits 0, so it never passes silently on a
+machine that cannot run it. Run it after any change to `st_sim.mjs` or to a
+guard, and after any SillyTavern update. It is what found the placeholder bug:
+the port carried `Let's get started.`, the fallback in SillyTavern's code, while
+`default/config.yaml` ships `promptPlaceholder: "[Start a new chat]"` and
+`addMissingConfigValues()` writes it into every install.
+
+**A generator that never reaches a shape is a gate that never tests it.** The
+first version of `parity_test.mjs` drew message content from a list of strings
+and so produced a multimodal message zero times in 60000 runs — the one merge
+risk that survives the guard was never exercised, and a mutation reintroducing
+the original bug passed. Prompt shapes are now constructed from `SHAPES` rather
+than sampled, the gate fails if any shape goes unreached or if no run touches
+the merge-risk path, and the tag pair is drawn to match the seed text most of
+the time so the split actually happens. Add a shape when you add a guard.
 
 **`st_sim.mjs` is a port, not a model.** Every guard in the engine is a
 prediction about SillyTavern's server, and a wrong prediction reports success

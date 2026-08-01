@@ -13,7 +13,7 @@ import { applyPrefill, DEFAULT_CONFIG, PROFILES, REASON } from './engine.js';
 import { deliver } from './st_sim.mjs';
 
 const MODULE = 'prefillControl';
-const EXTENSION_VERSION = '1.5.0';
+const EXTENSION_VERSION = '1.5.1';
 const UI = 'pfc';
 
 /** @returns {object} SillyTavern context */

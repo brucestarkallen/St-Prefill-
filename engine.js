@@ -22,7 +22,7 @@
  * those predictions are checked against.
  */
 
-export const ENGINE_VERSION = '1.5.0';
+export const ENGINE_VERSION = '1.5.1';
 
 /** Generation types SillyTavern can hand to sendOpenAIRequest. */
 export const GEN_TYPE = {

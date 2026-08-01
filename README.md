@@ -174,11 +174,35 @@ npx eslint engine.js index.js st_sim.mjs
 
 `negative_test.mjs` runs an unmutated control tree through every gate first. If a control run does not exit 0, the harness fails rather than reporting mutations as caught.
 
-The gates above check the engine against `st_sim.mjs`. `st_sim.mjs` itself is checked against SillyTavern's own `src/prompt-converters.js`, run side by side over randomised inputs until the outputs match byte for byte, and the engine is run end to end through that real server code. Those two harnesses need a SillyTavern checkout, so they do not live here — but a change to `st_sim.mjs` that has not been through them is a guess.
+The gates above check the engine against `st_sim.mjs`. `st_sim.mjs` itself is checked against SillyTavern's own source:
+
+```
+git clone --depth 1 -b staging https://github.com/SillyTavern/SillyTavern.git /tmp/st
+cd /tmp/st && npm install yaml --no-save
+cd - && ST=/tmp/st node parity_test.mjs
+```
+
+That runs the port and `src/prompt-converters.js` side by side until their output matches byte for byte, then runs the engine end to end through the real server code. It needs a checkout, so it is not part of `npm run gate`; without `ST` it prints SKIP rather than passing silently.
 
 ---
 
 ## Changelog
+
+### 1.5.1
+
+- **The parity gate ships.** `parity_test.mjs` runs `st_sim.mjs` against
+  SillyTavern's own `src/prompt-converters.js` over randomised inputs across
+  every post-processing type, then runs the engine end to end through that real
+  server code. It is what found two of the 1.5.0 defects; it was rebuilt from
+  scratch each time before this. Point `ST` at a checkout to run it.
+- **Its first version could not have found them.** It drew message content from
+  a list of strings, so it produced a multimodal message zero times in 60000
+  runs — the merge risk that survives the guard was never exercised, and a
+  mutation reintroducing the original bug passed. Prompt shapes are now
+  constructed rather than sampled, and the gate fails if a shape goes unreached
+  or if no run touches the merge-risk path. The same three mutations are now
+  caught within the first forty runs.
+- No change to the extension itself.
 
 ### 1.5.0
 

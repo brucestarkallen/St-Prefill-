@@ -4,7 +4,13 @@ export default [
         languageOptions: {
             ecmaVersion: 2023,
             sourceType: 'module',
-            globals: { console: 'readonly', document: 'readonly', globalThis: 'readonly', process: 'readonly' },
+            globals: {
+                console: 'readonly',
+                document: 'readonly',
+                globalThis: 'readonly',
+                process: 'readonly',
+                structuredClone: 'readonly',
+            },
         },
         rules: {
             'no-unused-vars': 'error',

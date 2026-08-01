@@ -49,7 +49,7 @@ const MUTATIONS = [
     ['empty prefill text is accepted', 'engine.js',
         "if (!String(cfg.text ?? '').trim()) {", 'if (false) {'],
     ['version stamp drifts', 'manifest.json',
-        '"version": "1.5.0"', '"version": "9.9.9"'],
+        '"version": "1.5.1"', '"version": "9.9.9"'],
     ['the default stops working without preset editing', 'engine.js',
         "source: 'extension',", "source: 'preset',"],
 

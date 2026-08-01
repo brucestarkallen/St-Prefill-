@@ -1,11 +1,12 @@
 {
   "name": "sillytavern-prefill-control",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "private": true,
   "type": "module",
   "description": "Gate harness for the Prefill Control SillyTavern extension. Not published.",
   "scripts": {
-    "gate": "node test.mjs && node wire_test.mjs && node load_test.mjs && node fuzz_test.mjs && node negative_test.mjs && npx eslint engine.js index.js st_sim.mjs"
+    "gate": "node test.mjs && node wire_test.mjs && node load_test.mjs && node fuzz_test.mjs && node negative_test.mjs && npx eslint engine.js index.js st_sim.mjs",
+    "parity": "node parity_test.mjs"
   },
   "devDependencies": {
     "eslint": "^9.0.0",
